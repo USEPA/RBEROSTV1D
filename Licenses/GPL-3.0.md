@@ -1,12 +1,5 @@
 # GNU GENERAL PUBLIC LICENSE version 3
 
-## Revisions before use:
-- Revise line 633 <program> per line 661 and 662.
-- Revise line 663 (add the year).
-- Rename your license file LICENSE.md.
-- Delete all the text above line 7 before.
- 
-
 # GNU GENERAL PUBLIC LICENSE
    Version 3, 29 June 2007
 
@@ -661,7 +654,7 @@ Also add information on how to contact you by electronic and paper mail.
 If the program does terminal interaction, make it output a short
 notice like this when it starts in an interactive mode:
 
-<program>  Copyright (C) <year>  U.S. Federal Government (in countries where recognized)
+RBEROSTv1D  Copyright (C) 2026  U.S. Federal Government (in countries where recognized)
 This program comes with ABSOLUTELY NO WARRANTY; for details type `show w'.
 This is free software, and you are welcome to redistribute it
 under certain conditions; type `show c' for details.
