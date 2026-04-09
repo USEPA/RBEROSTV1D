@@ -1,0 +1,194 @@
+---
+title: "Run RBEROST"
+date: "5/6/2021"
+date (updated): "10/9/2025"
+output: html_document
+---
+
+## Configure R
+This code will load the required R packages that RBEROST uses. To run the code, click the green triangle "Run Current Chunk" below. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished.
+
+**Important:** Please open this project by double-clicking `Tier_1_Optimization-SSWR_5_3_2.Rproj` to ensure proper package management via renv.
+
+The package installation may take several minutes the first time you run this code chunk. Follow any prompts that appear in the R console to complete package installation.
+You may need to use renv::install("package_name") to manually install any packages that fail to install automatically. When renv::status() shows "No issues found -- the project is in a consistent state", proceed to the next code chunk.
+
+```{r configureR}
+
+# Check renv status to ensure all packages are installed
+renv::status()
+
+# If packages are missing, restore the environment from the renv package list
+renv::restore()
+
+# If any packages are still missing, manually install them using renv::install("package_name")
+# Example: renv::install("tidyverse") # Comment out or remove this line after installing the package
+
+```
+
+## Load all required packages
+This code chunk will load all required R packages. To run the code, click the green triangle.
+If there are any errors indicating that a package is not installed, please refer to the previous code chunk to install missing packages.
+
+```{r loadpackages}
+
+# Load required packages
+library(tidyverse)
+library(reshape2)
+library(data.table)
+library(stringr)
+library(foreach)
+library(shiny)
+library(shinycssloaders)
+library(tidygraph)
+library(bit64)
+library(beepr)
+library(sass)
+library(jquerylib)
+
+```
+
+## Run Preprocessor
+
+To run the preprocessor, change any lines of code necessary and click the green triangle below. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished.
+
+```{r runpreprocessor, warning = FALSE}
+
+
+### Set file paths and required file names ###############################################################################################
+
+# This variable represents the working directory where RBEROST is located. 
+# You will need to write out the full path ending with the "Tier_1_Optimization-SSWR_5_3_2/" folder.
+working_dir <- "C:/RBEROST/Tier_1_Optimization-SSWR.5.3.2/"
+
+# This variable represents the location of input data files used to develop AMPL model files. 
+# If you are using the default file structure from Github, this filepath should not need to be changed. 
+# The working directory variable represents the folder where the Tier_1_Optimization-SSWR_5_3_2 folder is located. 
+InPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/")
+
+# This variable represents the location where AMPL model files will be printed for use on the NEOS server. 
+# If you are using the default file structure from Github, this filepath should not need to be changed. 
+# The working directory variable represents the folder where the Tier_1_Optimization-SSWR_5_3_2 folder is located. 
+OutPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Outputs/")
+
+# Define the name of the UserSpecs input file. 
+# This file contains the user specifications for the optimization, including the BMPs that will be considered in the optimization. 
+# If you wish to change which BMPs are considered, you can edit this file.
+user_specs_name <- "01_UserSpecs_BMPs_wCS_NoSeptic.csv" 
+
+### User Interface ###############################################################################################
+MODE <- "Select"
+# Mode Options
+# "Select" will only run watersheds named in the watershed_choices vector.
+
+# Select watershed(s) to include in the model
+# Note: You can select multiple watersheds by adding them to the vector below, separated by commas. For example: c("Upper Connecticut River", "Housatonic River")
+watershed_choices <- c("Mystic Harbor")
+
+
+# Watersheds available in the Dynamic Long Island Sound Model:
+# Bantam Lake
+# Batterson Park Pond
+# Byram River
+# Upper Connecticut River
+# Upper Middle Connecticut River
+# Lower Middle Connecticut River
+# Lower Connecticut River
+# Farm River
+# Linsley Pond Cedar Pond
+# Little Narragansett Bay
+# Mystic Harbor
+# New Haven Harbor
+# Niantic Bay
+# Norwalk Harbor
+# Pequonnock River
+# Saugatuck Estuary
+# Southport Harbor Sasco Brook
+# Stonington Harbor
+# Thames River
+
+# Select years to include in the model (e.g., c("00","01","02"))
+# Note: years are available from 00 to 20, and numbers less than ten must have preceeding zeros.
+model_years <- c("01") #
+
+# This variable represents the planning horizon in terms of years. Default is 15.
+horizon <- 15
+
+# This variable represents to expected interest rate. Default is 0.03, or 3%.
+interest_rate <- 0.03
+
+# Load parameter specification
+actionable_load <- TRUE # If TRUE, the model will exclude "other" loads from sources such as snowmelt and atmospheric deposition for which there are no applicable BMPs that can reduce them
+# Note: Setting to FALSE is much more likely to result in infeasible results since "other" loads typically make up sizeable portions of overall loadings within a watershed, and as such the reduction target percentages exceed the amount that can be reduced by BMPs in other categories. 
+
+# This variable lets the user decide if they wish to consider agricultural BMP efficiencies of practices versus "No Practice" (a default of no conservation practices) or "Baseline" (a default of practices currently in place, and implementing a BMP will remove practices currently in place).
+AgBMPcomparison <- "No Practice"
+
+# This variable decides if you will run RBEROST with or without uncertainty. It can be TRUE or FALSE. Running with uncertainty takes longer than running without.
+IncludeUncertainty <- TRUE
+
+# If running RBEROST with uncertainty, how many scenarios would you like to view? Default is 3.
+n.scenarios <- 3 
+
+# If running RBEROST with uncertainty, how different would you like the scenarios to be? Each scenario will be solved for loading limits that are a certain percentage lower than the previous. Default is 0.01, or 1%.
+scenariostepchange <- 0.01
+
+### BMP Specifications
+
+# -------------General notes-------------
+
+# 1. User must specify which BMPs will be considered in the optimization by specifying "X" in the BMP_Selection field of "UserSpecs_BMPs.csv"
+# 2. Current input data refers to Northeastern Dynamic Regional SPARROW loading data and land use data specific to New York, Massachusetts, Rhode Island, Vermont and New Hampshire.
+# 3. If more advanced R users would like to assess different locations/data, they would need to search for and update lines of code in the preprocessing code that end in "#*#" 
+
+
+### Run Gateway code which triggers Preprocessing code w/ or w/o uncertainty
+
+setwd(working_dir)
+
+source(
+  paste0(working_dir, "RBEROST-Northeast/R/01_Optimization_Preprocessing_gateway-Northeast.R")
+  #local = TRUE
+)
+
+```
+
+## Submit AMPL files to NEOS Server
+
+The following code chunk will submit the AMPL files generated in the preprocessing step to the NEOS server for optimization. You will need to update the email variable with a valid email address where you would like to receive the results of the optimization. You will also need to update the NEOSresults variable with a filepath where you would like the NEOS result file to be saved. If you are using the default file structure from Github, this filepath should not need to be changed. The working directory variable represents the folder where the Tier_1_Optimization-SSWR_5_3_2 folder is located. You can also define a file name suffix for results and comments for your NEOS run. Once you have updated these variables, click the green triangle below to run the code. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished.
+
+```{r NEOSresults}
+
+# Variables for User to Update ------------------------------------------------
+
+# Enter valid email address
+email <- "example@email.com"
+
+# Enter a filepath where the NEOS result file will be saved.
+NEOSresults <- "RBEROST-Northeast/Preprocessing/Outputs/"
+
+# Define file name suffix for results
+paramname <- paste0(paste(watershed_choices, collapse = "_"), "_", Sys.Date())
+
+# Comments for NEOS run
+comments <- "Mystic Harbor, Year 01, All Default with Uncertainty"
+
+# Run NEOS optimization script-----------------------------------------------
+suppressWarnings({
+setwd(working_dir)
+})
+source(paste0(working_dir, "./RBEROST-Northeast/R/01_Optimization_NEOSInteraction-Northeast.R"))
+
+```
+
+## Run Postprocessor
+
+To run the postprocessor, click the green triangle below. A window will pop up either in RStudio or in your default web browser. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished. Be aware that simply closing the browser window will not stop the Shiny app. You must also click the red square below if you wish to relaunch the app.
+
+```{r runpostprocessor}
+options(shiny.maxRequestSize = 100000 * 1024^2)
+suppressWarnings({
+setwd(working_dir)
+})
+source(paste0(working_dir, "./RBEROST-Northeast/R/02_Optimization_RunShiny-Northeast.R"), local = TRUE)
+```
