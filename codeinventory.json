@@ -1,7 +1,7 @@
-﻿{
+{
   "name": "RBEROSTV1D",
   "description": "Dynamic version of River Basin Export Reduction Optimization Support Tool for Long Island Sound Basin",
-  "license": "https://github.com/USEPA/RBEROSTV1D/tree/main/license.md",
+  "license": "https://github.com/USEPA/RBEROSTV2D/tree/main/license.md",
   "openSourceProject": 1,
   "governmentWideReuseProject": 1,
   "tags": [
