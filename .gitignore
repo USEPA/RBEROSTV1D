@@ -1,0 +1,25 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+rosm.cache/
+*.out
+ManuscriptFigures
+RBEROST-Northeast/Postprocessing
+!RBEROST-Northeast/Postprocessing/Inputs/RBEROSTdemo_nouncertainty.txt
+!RBEROST-Northeast/Postprocessing/Inputs/RBEROSTdemo_uncertainty.txt
+RBEROST-User-Guide*
+Images
+z_drafts/
+**/z_drafts/
+
+# renv
+renv/library/
+renv/local/
+renv/cellar/
+renv/lock/
+renv/python/
+renv/sandbox/
+renv/staging/
+.Rprofile.user
+
