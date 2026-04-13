@@ -45,6 +45,21 @@ library(beepr)
 #                "shiny", "shinycssloaders", "tidygraph", "bit64", "beepr")
 ```
 
+## Download lfs files from Zenodo (required unless using git lfs to download large files)
+
+When you download the repository from github, only placeholders for large files (>100MB) listed
+in the .gitattributes file will be downloaded.  If you are using git you can install lfs and
+download these in git.  Otherwise, you can download these files directly from a Zenodo archive
+by cutting and pasting each of the following urls into a browser (or pointing to each of the urls below and usingv<Ctrl-Click>) and saving each into the .\RBEROSTV1D\RBEROST-Northeast\Preprocessing\Inputs folder then unzipping to that folder.  Don't create additional subdirectories under Inputs when unzipping any .zip files.
+
+https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tn.csv?download=1
+https://zenodo.org/record/19186583/files/Predict_NoBFlowN_WSeptic.csv?download=1
+https://zenodo.org/record/19186583/files/Predict_P.csv?download=1
+https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tp.csv?download=1
+https://zenodo.org/record/19186583/files/ne_sparrow_model_input.csv?download=1
+https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF24.csv?download=1
+https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF25.csv?download=1"
+
 ## Run Batch Preprocessor
 
 To run the preprocessor, change any lines of code necessary and click the green triangle below. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished.
