@@ -4,6 +4,8 @@
 # DATE:  4/1/21
 # UPDATED BY: Sam Ennett, Kelly-Anne Moffa (ICF)
 # DATE: 11/2025
+# UPDATED BY: Craig Connolly, Naomi Detenbeck (EPA)
+# DATE: 5/2026
 ###########################################################################################
 # This step generates the uncertainty estimates used in the AMPL model. It is designed to be run after the Preprocessor, and will ammend the AMPL files.
 
@@ -247,6 +249,10 @@ sm_P <- data.frame(
 ### Overwrite year 20 transfer coefficients, no Y21S1 to compare to
 sm_P$coeff <- ifelse(sm_P$year == 20 & sm_P$season == 4, 0, sm_P$coeff)
 sm_P$coeff_se <- ifelse(sm_P$year == 20 & sm_P$season == 4, 0, sm_P$coeff_se)
+# ND: Set P transfer coefficient to zero because P storage term in dynamic SPARROW
+# model is insignificant so all subsequent storage terms should be zero
+sm_P$coeff <- 0
+sm_P$coeff_se <- 0
 
 # # Transfer coefficient threshold
 if (use_threshold) {
@@ -1308,18 +1314,24 @@ length(unique(temp_sparrow_area$comid)) # 20977, there are 20978 in new TN SPARR
 
 ### Select percentage of incremental area that is cropland
 streamcat_ag_urban <- StreamCat_api %>% 
-  select(c("comid","PctCrop2019Cat", "PctUrbHi2019Cat", "PctUrbLo2019Cat", 
-           "PctUrbMd2019Cat", "PctUrbOp2019Cat")) #*#
+ select(c("comid","PctCrop2019Cat", "PctUrbHi2019Cat", "PctUrbLo2019Cat",
+          "PctUrbMd2019Cat", "PctUrbOp2019Cat")) #*#           
+
+
 
 ### Sum urban sub-designations to get total urban area
+#streamcat_ag_urban$urban_pct <- with(streamcat_ag_urban, 
+#  PctUrbHi2019Cat+PctUrbLo2019Cat+PctUrbMd2019Cat+PctUrbOp2019Cat)
+# ND: Revise to be consistent with definition of urban area in dynamic SPARROW
 streamcat_ag_urban$urban_pct <- with(streamcat_ag_urban, 
-                                     PctUrbHi2019Cat+PctUrbLo2019Cat+PctUrbMd2019Cat+PctUrbOp2019Cat)
+                                     PctUrbHi2019Cat+PctUrbMd2019Cat)
 
 ### Convert the sparrow input area from KM to acres
 temp_sparrow_area$inc_ac <- temp_sparrow_area$inc_area*km2_to_ac #*#
 
 ### Use the streamcat area percentages to idenitfy ag and urban areas in each catchment
-temp_area <- merge(temp_sparrow_area, streamcat_ag_urban,by="comid")
+# temp_area <- merge(temp_sparrow_area, streamcat_ag_urban,by="comid")
+temp_area <- left_join(temp_sparrow_area, streamcat_ag_urban, by="comid") #ND get rid of excess LU data not in area of interest
 
 temp_area$ag_ac <- with(temp_area,(PctCrop2019Cat/100)*inc_ac) #*#
 temp_area$urban_ac <- with(temp_area,(urban_pct/100)*inc_ac) #*#
@@ -2679,7 +2691,7 @@ invisible(
       cat(
         paste0("\nfor {s in seasons, y in years} {
                \nlet loads_lim_N", i, "[s,y, 'limits']:= loads_lim_N", i, "[s,y,'limits'] * ", scenarioincrement, ";}"),
-        file = paste(OutPath, "STcommand_dynamic_uncertainty.amp", sep=""),
+        file = paste(OutPath, "STcommand_seasonal.amp", sep=""),
         sep = "",
         append = T
       )
@@ -2692,7 +2704,7 @@ invisible(
     foreach(i = 1:length(param_loads_lim_tp)) %do% {
       cat(
         paste0("\nfor {s in seasons, y in years} {\nlet loads_lim_P", i, "[s,y,'limits']:= loads_lim_P", i, "[s,y,'limits'] * ", scenarioincrement, ";}"),
-        file = paste(OutPath, "STcommand_dynamic_uncertainty.amp", sep=""),
+        file = paste(OutPath, "STcommand_seasonal.amp", sep=""),
         sep = "",
         append = T
       )
@@ -2943,7 +2955,7 @@ for {c in comid_all_N} {
 cat(
   "
 };
-
+option cplex_options 'absmipgap 1.0';
 option display_precision 10;
 display solve_result_num, solve_result;
 display cost.result;
