@@ -1,14 +1,14 @@
 ---
 title: "Run RBEROST"
 date: "5/6/2021"
-date (updated): "10/9/2025"
+date (updated): "5/11/2026"
 output: html_document
 ---
 
 ## Configure R
 This code will load the required R packages that RBEROST uses. To run the code, click the green triangle "Run Current Chunk" below. If no green arrow appears, and instead there is a red square, click the red square to stop any ongoing processes and a green triangle should appear in its place. When clicked, the green triangle will turn into a red square until the code is finished.
 
-**Important:** Please open this project by double-clicking `Tier_1_Optimization-SSWR_5_3_2.Rproj` to ensure proper package management via renv.
+**Important:** Please open this project by double-clicking `RBEROSTv1D.Rproj` to ensure proper package management via renv.
 
 The package installation may take several minutes the first time you run this code chunk. Follow any prompts that appear in the R console to complete package installation.
 You may need to use renv::install("package_name") to manually install any packages that fail to install automatically. When renv::status() shows "No issues found -- the project is in a consistent state", proceed to the next code chunk.
@@ -45,6 +45,7 @@ library(bit64)
 library(beepr)
 library(sass)
 library(jquerylib)
+library(foreign)
 
 ```
 ## Download lfs files from Zenodo (required unless using git lfs to download large files)
@@ -54,13 +55,12 @@ in the .gitattributes file will be downloaded.  If you are using git you can ins
 download these in git.  Otherwise, you can download these files directly from a Zenodo archive
 by cutting and pasting each of the following urls into a browser (or pointing to each of the urls below and usingv<Ctrl-Click>) and saving each into the .\RBEROSTV1D\RBEROST-Northeast\Preprocessing\Inputs folder then unzipping to that folder.  Don't create additional subdirectories under Inputs when unzipping any .zip files.
 
-https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tn.csv?download=1
-https://zenodo.org/record/19186583/files/Predict_NoBFlowN_WSeptic.csv?download=1
-https://zenodo.org/record/19186583/files/Predict_P.csv?download=1
-https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tp.csv?download=1
-https://zenodo.org/record/19186583/files/ne_sparrow_model_input.csv?download=1
-https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF24.csv?download=1
-https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF25.csv?download=1"
+https://zenodo.org/record/20127975/files/ne_dynamic_sparrow_se_tn_final.zip?download=1
+https://zenodo.org/record/20127975/files/Predict_NoBFlowN_WSeptic_final.zip?download=1
+https://zenodo.org/record/20127975/files/Predict_P_final.zip?download=1
+https://zenodo.org/record/20127975/files/ne_dynamic_sparrow_se_tp_final.zip?download=1
+https://zenodo.org/record/20127975/files/ne_sparrow_model_input.zip?download=1
+https://zenodo.org/record/20127975/files/RiparianEfficiencies_ICF25.zip?download=1"
 
 ## Run Preprocessor
 
@@ -73,7 +73,7 @@ To run the preprocessor, change any lines of code necessary and click the green 
 
 # This variable represents the working directory where RBEROST is located. 
 # You will need to write out the full path ending with the "Tier_1_Optimization-SSWR_5_3_2/" folder.
-working_dir <- "C:/RBEROST/Tier_1_Optimization-SSWR.5.3.2/"
+working_dir <- "C:/Users/ndetenbe/OneDrive - Environmental Protection Agency (EPA)/RBEROSTV1D/"
 
 # This variable represents the location of input data files used to develop AMPL model files. 
 # If you are using the default file structure from Github, this filepath should not need to be changed. 
@@ -88,7 +88,8 @@ OutPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Outputs/")
 # Define the name of the UserSpecs input file. 
 # This file contains the user specifications for the optimization, including the BMPs that will be considered in the optimization. 
 # If you wish to change which BMPs are considered, you can edit this file.
-user_specs_name <- "01_UserSpecs_BMPs_wCS_NoSeptic.csv" 
+# user_specs_name <- "01_UserSpecs_BMPs_wCS_NoSeptic.csv" 
+user_specs_name <- "file_01_UserSpecs_BMPs_wCS_2025.csv" #ND updated to 2025 costs, added cover crops
 
 ### User Interface ###############################################################################################
 MODE <- "Select"
@@ -97,8 +98,7 @@ MODE <- "Select"
 
 # Select watershed(s) to include in the model
 # Note: You can select multiple watersheds by adding them to the vector below, separated by commas. For example: c("Upper Connecticut River", "Housatonic River")
-watershed_choices <- c("Mystic Harbor")
-
+watershed_choices <- c("Upper Connecticut River")
 
 # Watersheds available in the Dynamic Long Island Sound Model:
 # Bantam Lake
@@ -109,17 +109,32 @@ watershed_choices <- c("Mystic Harbor")
 # Lower Middle Connecticut River
 # Lower Connecticut River
 # Farm River
+# Housatonic River
+# Kenosia Lake
 # Linsley Pond Cedar Pond
 # Little Narragansett Bay
 # Mystic Harbor
 # New Haven Harbor
 # Niantic Bay
 # Norwalk Harbor
+# Pawcatuck River 
 # Pequonnock River
 # Saugatuck Estuary
 # Southport Harbor Sasco Brook
 # Stonington Harbor
 # Thames River
+
+# South Shore watersheds
+# Hempstead Harbor
+# Huntington Harbor
+# Lloyd Harbor
+# Manhasset Bay
+# Mt. Sinai Harbor
+# Nissequogue River
+# Northport-Centerport Harbor Complex
+# Oyster Bay Cold Spring Harbor Complex
+# Port Jefferson Harbor
+# Stony Brook Harbor
 
 # Select years to include in the model (e.g., c("00","01","02"))
 # Note: years are available from 00 to 20, and numbers less than ten must have preceeding zeros.
@@ -139,7 +154,7 @@ actionable_load <- TRUE # If TRUE, the model will exclude "other" loads from sou
 AgBMPcomparison <- "No Practice"
 
 # This variable decides if you will run RBEROST with or without uncertainty. It can be TRUE or FALSE. Running with uncertainty takes longer than running without.
-IncludeUncertainty <- TRUE
+IncludeUncertainty <- FALSE
 
 # If running RBEROST with uncertainty, how many scenarios would you like to view? Default is 3.
 n.scenarios <- 3 
@@ -176,7 +191,7 @@ The following code chunk will submit the AMPL files generated in the preprocessi
 # Variables for User to Update ------------------------------------------------
 
 # Enter valid email address
-email <- "example@email.com"
+email <- "youremailhere"
 
 # Enter a filepath where the NEOS result file will be saved.
 NEOSresults <- "RBEROST-Northeast/Preprocessing/Outputs/"
@@ -185,7 +200,7 @@ NEOSresults <- "RBEROST-Northeast/Preprocessing/Outputs/"
 paramname <- paste0(paste(watershed_choices, collapse = "_"), "_", Sys.Date())
 
 # Comments for NEOS run
-comments <- "Mystic Harbor, Year 01, All Default with Uncertainty"
+ comments <- "Upper Connecticut River_Year01_avg_33pctNredn_AllDefault;"
 
 # Run NEOS optimization script-----------------------------------------------
 suppressWarnings({
