@@ -1,0 +1,11 @@
+"watershed_name","Index","ComID","Watershed_HUC","Percent_Reduction","TN_or_TP","OutofNetworkFlag_X","TermFlag_X","Non-Isolated?","Isolated?","Number"
+"New Haven Harbor",27,6177676,NA,0.28,"TN",NA,NA,"X","",1
+"New Haven Harbor",27,6177962,NA,0.28,"TN",NA,NA,"X","",1
+"New Haven Harbor",27,6178292,NA,0.28,"TN",NA,NA,"X","",1
+"New Haven Harbor",27,6178522,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178550,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178552,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178556,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178558,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178562,NA,0.28,"TN",NA,NA,"","X",1
+"New Haven Harbor",27,6178610,NA,0.28,"TN",NA,NA,"","X",1

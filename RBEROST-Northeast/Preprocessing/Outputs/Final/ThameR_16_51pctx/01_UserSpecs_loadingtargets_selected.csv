@@ -1,0 +1,5 @@
+"watershed_name","Index","ComID","Watershed_HUC","Percent_Reduction","TN_or_TP","OutofNetworkFlag_X","TermFlag_X","Non-Isolated?","Isolated?","Number"
+"Thames River",25,6170754,NA,0.51,"TN",NA,NA,"X","",1
+"Thames River",25,6170810,NA,0.51,"TN",NA,NA,"","X",1
+"Thames River",25,6170812,NA,0.51,"TN",NA,NA,"","X",1
+"Thames River",25,6170892,NA,0.51,"TN",NA,NA,"","X",1

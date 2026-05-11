@@ -1,0 +1,2 @@
+watershed_name,Index,ComID,Watershed_HUC,Percent_Reduction,TN_or_TP,OutofNetworkFlag_X,TermFlag_X,Non-Isolated?,Isolated?,Number
+Lower Middle Connecticut River,34,7698936,NA,0.09,TN,NA,NA,X,,1

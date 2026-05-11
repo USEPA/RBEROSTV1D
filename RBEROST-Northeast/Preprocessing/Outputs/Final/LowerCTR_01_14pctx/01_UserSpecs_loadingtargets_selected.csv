@@ -1,0 +1,2 @@
+watershed_name,Index,ComID,Watershed_HUC,Percent_Reduction,TN_or_TP,OutofNetworkFlag_X,TermFlag_X,Non-Isolated?,Isolated?,Number
+Lower Connecticut River,35,7703046,NA,0.14,TN,NA,NA,X,,1

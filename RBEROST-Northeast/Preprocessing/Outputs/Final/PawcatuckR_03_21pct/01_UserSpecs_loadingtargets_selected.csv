@@ -1,0 +1,3 @@
+"watershed_name","Index","ComID","Watershed_HUC","Percent_Reduction","TN_or_TP","OutofNetworkFlag_X","TermFlag_X","Non-Isolated?","Isolated?","Number"
+"Pawcatuck River",22,6141214,NA,0.21,"TN",NA,NA,"X","",1
+"Pawcatuck River",22,6141326,NA,0.21,"TN",NA,NA,"","X",1

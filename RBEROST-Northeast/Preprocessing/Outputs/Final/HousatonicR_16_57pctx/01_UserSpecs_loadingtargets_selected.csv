@@ -1,0 +1,3 @@
+"watershed_name","Index","ComID","Watershed_HUC","Percent_Reduction","TN_or_TP","OutofNetworkFlag_X","TermFlag_X","Non-Isolated?","Isolated?","Number"
+"Housatonic River",24,7709738,NA,0.57,"TN",NA,NA,"X","",1
+"Housatonic River",24,7718660,NA,0.57,"TN",NA,NA,"","X",1

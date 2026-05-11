@@ -1,0 +1,44 @@
+Error at _cmdno 4 executing "solve" command
+(file amplin, line 161003, offset 7915886):
+error processing param point_effic_P:
+	invalid subscript point_effic_P['NA','point'] discarded.
+presolve: constraint total_loads_N1[3,16] cannot hold:
+	body <= 265994 cannot be >= 280663; difference = -14669.2
+presolve: constraint total_loads_N1[2,16] cannot hold:
+	body <= 416516 cannot be >= 429480; difference = -12964.3
+presolve: constraint total_loads_N1[3,16] cannot hold:
+	body <= 265994 cannot be >= 280663; difference = -14669.2
+presolve: constraint total_loads_N1[2,16] cannot hold:
+	body <= 416516 cannot be >= 429480; difference = -12964.3
+presolve: constraint total_loads_N1[3,16] cannot hold:
+	body <= 265994 casolve_result_num = 299
+solve_result = infeasible
+
+cost.result = infeasible
+
+cost = 0
+
+set seasons := 1 2 3 4;
+
+set years := 16;
+
+point_dec [*] :=
+;
+
+urban_frac :=
+;
+
+ag_frac :=
+;
+
+ripbuf_length :=
+;
+
+loads_lim_N1 :=
+1 16 limits   613364.6487
+2 16 limits   416515.5495
+3 16 limits   265993.5109
+4 16 limits   370778.5415
+;
+
+

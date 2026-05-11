@@ -1,0 +1,187 @@
+
+#WMOST Optimization Screening Tool AMPL command file with uncertainty
+
+option display_transpose -10000;
+
+
+display loads_lim_N1;
+for {x in Scenarios} {
+
+if x > 1
+  then {
+  
+  };
+solve;
+
+for {b in Bootstraps} {
+
+	let agcost_frac_rev[b] := Uniform(1,5/3);
+
+  for {u in urban_bmp} {
+	  for {o in cost_type} {
+	    repeat {
+	      let urban_costs_rev[u,o,b] := Normal(urban_costs[u,o], urban_costs_se[u,o]);
+	    } until urban_costs_rev[u,o,b] >= 0;
+	  };
+	 };
+	 
+for {c in comid_N1} {
+for {s in seasons} {
+            for {y in years} {
+              for {l in loads_N} {
+repeat {
+let  baseloads_N1_rev[c,s,y,l,b] := Normal(baseloads_N1[c,s,y,l], baseloads_N1_se[c,s,y,l]);
+} until baseloads_N1_rev[c,s,y,l,b] >= 0;
+};
+repeat {
+          let transfer_coefficients_N1_rev[c,s,y,'coeff',b] := Normal(transfer_coefficients_N1[c,s,y,'coeff'], transfer_coefficients_N1_se[c,s,y,'coeff']);
+} until transfer_coefficients_N1_rev[c,s,y,'coeff',b] <= 1;
+for {r in ripbuf_bmp} {
+let riparianremoval_N1_rev[c,s,y,r,b] := Normal(riparianremoval_N1[c,s,y,r], riparianremoval_N1_se[c,s,y,r]);
+  }; 
+};  
+};  
+};
+for {c in comid_all_N} {
+  for {a in ag_bmp} {
+    repeat {
+      let ag_effic_N_rev[c,a,b] := Normal(ag_effic_N[c,a], ag_effic_N_se[c,a]);
+    } until ag_effic_N_rev[c,a,b] <= 1;
+  };
+  for {p in point_c} {
+    repeat {
+      let point_effic_N_rev[c,p,b] := Normal(point_effic_N[c,p], point_effic_N_se[c,p]);
+    } until point_effic_N_rev[c,p,b] <= 1;
+  };
+  for {u in urban_bmp} {
+    repeat {
+      let urban_effic_N_rev[c,u,b] := Normal(urban_effic_N[c,u], urban_effic_N_se[c,u]);
+    } until urban_effic_N_rev[c,u,b] <= 1;
+  };
+  for {e in septic_bmp} {
+    repeat {
+      let septic_effic_N_rev[c,e,b] := Normal(septic_effic_N[c,e], septic_effic_N_se[c,e]);
+    } until septic_effic_N_rev[c,e,b] <= 1;
+  };
+};
+
+for {c in comid_all} {
+
+  for {o in cost_type} {
+    repeat {
+      let point_costs_rev[c,o,b] := Normal(point_costs[c,o], point_costs_se[c,o]);
+    } until point_costs_rev[c,o,b] >= 0;
+  };
+
+  for {r in ripbuf_bmp} {
+    repeat {
+      let ripbuf_costs_capital_rev[c,r,b] := Normal(ripbuf_costs_capital[c,r], ripbuf_costs_capital_se[c,r]);
+    } until ripbuf_costs_capital_rev[c,r,b] >= 0;
+    repeat {
+      let ripbuf_costs_operations_rev[c,r,b] := Normal(ripbuf_costs_operations[c,r], ripbuf_costs_operations_se[c,r]);
+    } until ripbuf_costs_operations_rev[c,r,b] >= 0;
+  };
+
+  for {ar in area_sub} {
+    repeat {
+      let area_rev[c,ar,b] := Normal(area[c,ar], area_se[c,ar]);
+    } until area_rev[c,ar,b] >= 0;
+  };
+
+  for {a in ag_bmp} {
+    repeat {
+      let ag_costs_capital_rev[c,a,b] := Normal(ag_costs_capital[c,a], ag_costs_capital_se[c,a]);
+    } until ag_costs_capital_rev[c,a,b] >= 0;
+    repeat {
+      let ag_costs_operations_rev[c,a,b] :=  Normal(ag_costs_operations[c,a], ag_costs_operations_se[c,a]);
+    } until ag_costs_operations_rev[c,a,b] >= 0;
+  };
+
+  repeat {
+    let runoff_coeff_urban_rev[c,'urban',b] := Normal(runoff_coeff_urban[c,'urban'], runoff_coeff_urban_se[c,'urban']);
+  } until 1 >= runoff_coeff_urban_rev[c,'urban',b] >= 0;
+
+  repeat {
+    let urban_cost_adjustment_coef_rev[c,b] := Normal(urban_cost_adjustment_coef[c], urban_cost_adjustment_coef_se[c]);
+  } until urban_cost_adjustment_coef_rev[c,b] >= 0;
+
+};
+
+
+for {c in comid_all_N} {
+  for {e in septic_bmp} {
+    repeat {
+      let septic_costs_capital_rev[c,e,b] := Normal(septic_costs_capital[c,e], septic_costs_capital_se[c,e]);
+    } until septic_costs_capital_rev[c,e,b] >= 0;
+    repeat {
+      let septic_costs_operations_rev[c,e,b] :=  Normal(septic_costs_operations[c,e], septic_costs_operations_se[c,e]);
+    } until septic_costs_operations_rev[c,e,b] >= 0;
+  };
+};
+
+
+};
+
+option display_precision 10;
+display solve_result_num, solve_result;
+display cost.result;
+display cost;
+option display_1col 10000000000;
+option omit_zero_rows 1;
+option omit_zero_cols 1;
+
+display {b in Bootstraps} (sum {c in comid_all} (ps_coef_rev[c,b] * point_dec[c]) + 
+sum {c in comid_all, u in urban_bmp} (urban_coef_rev[c,u,b] * urban_frac[c,u]) + 
+sum {c in comid_all, a in ag_bmp} (ag_coef_rev[c,a,b] * ag_frac[c,a]) +
+sum {c in comid_all, e in septic_bmp} (septic_coef_rev[c,e,b] * septic_frac[c,e]) +
+sum {c in comid_all, r in ripbuf_bmp} (ripbuf_coef_rev[c,r,b] * ripbuf_length[c,r]));
+  
+
+for {c in comid_N1, s in seasons, y in years, b in Bootstraps} {
+
+            let inc_storage_load_N1_rev[c,s,y,b] :=
+          if s=first(seasons) then (if y = first(years) then ((baseloads_N1_rev[c,s,y,'storage',b] + 
+
+          baseloads_N1_rev[c,s,y,'ag',b] * (1 - sum {a in ag_bmp}(ag_effic_N_rev[c,a,b] * ag_frac[c,a])) + 
+
+          baseloads_N1_rev[c,s,y,'urban',b] * (1 - sum{u in urban_bmp}(urban_effic_N_rev[c,u,b] * urban_frac[c,u])) + 
+
+          (baseloads_N1_rev [c,s,y,'point',b] + ((baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,'Sewer_convert'] * septic_effic_N_rev[c,'Sewer_convert',b])) * (1 - (point_effic_N_rev[c,'point',b] * point_dec[c])) + 
+          (baseloads_N1_rev [c,s,y,'septic',b] - sum {e in septic_bmp} (baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,e] * septic_effic_N_rev[c,e,b]) - 
+
+          sum {r in ripbuf_bmp} (ripbuf_length[c,r] * riparianremoval_N1_rev[c,s,y,r,b]))) else ((inc_storage_load_N1_rev[c,4,y-1,b] * transfer_coefficients_N1_rev[c,4,y-1,'coeff',b]) + 
+
+          baseloads_N1_rev[c,s,y,'ag',b] * (1 - sum {a in ag_bmp}(ag_effic_N_rev[c,a,b] * ag_frac[c,a])) + 
+
+          baseloads_N1_rev[c,s,y,'urban',b] * (1 - sum{u in urban_bmp}(urban_effic_N_rev[c,u,b] * urban_frac[c,u])) + 
+
+          (baseloads_N1_rev [c,s,y,'point',b] + ((baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,'Sewer_convert'] * septic_effic_N_rev[c,'Sewer_convert',b])) * (1 - (point_effic_N_rev[c,'point',b] * point_dec[c])) + 
+          (baseloads_N1_rev [c,s,y,'septic',b] - sum {e in septic_bmp} (baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,e] * septic_effic_N_rev[c,e,b]) -  
+
+          sum {r in ripbuf_bmp} (ripbuf_length[c,r] * riparianremoval_N1_rev[c,s,y,r,b]))) else ((inc_storage_load_N1_rev[c,s-1,y,b] * transfer_coefficients_N1_rev[c,s-1,y,'coeff',b]) + 
+
+          baseloads_N1_rev[c,s,y,'ag',b] * (1 - sum {a in ag_bmp}(ag_effic_N_rev[c,a,b] * ag_frac[c,a])) + 
+
+          baseloads_N1_rev[c,s,y,'urban',b] * (1 - sum{u in urban_bmp}(urban_effic_N_rev[c,u,b] * urban_frac[c,u])) + 
+
+          (baseloads_N1_rev [c,s,y,'point',b] + ((baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,'Sewer_convert'] * septic_effic_N_rev[c,'Sewer_convert',b])) * (1 - (point_effic_N_rev[c,'point',b] * point_dec[c])) + 
+          (baseloads_N1_rev [c,s,y,'septic',b] - sum {e in septic_bmp} (baseloads_N1_rev [c,s,y,'septic',b]/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,e] * septic_effic_N_rev[c,e,b]) -  
+
+          sum {r in ripbuf_bmp} (ripbuf_length[c,r] * riparianremoval_N1_rev[c,s,y,r,b]));
+};
+
+display {b in Bootstraps, s in seasons, y in years} (sum{c in comid_N1} (inc_storage_load_N1_rev[c,s,y,b]));
+
+display seasons;
+display years;
+  
+display point_dec;
+         
+option display_1col 0; 
+display ripbuf_length;
+option display_width 100000000000;
+display urban_frac;
+         
+display ag_frac;
+}
+display septic_frac;
