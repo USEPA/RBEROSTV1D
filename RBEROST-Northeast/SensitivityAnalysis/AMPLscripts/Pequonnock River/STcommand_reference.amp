@@ -1,0 +1,17 @@
+#WMOST Optimization Screening Tool AMPL command file
+solve;
+option display_precision 10;
+display solve_result_num, solve_result;
+display cost.result;
+display cost;
+
+option display_1col 10000000000;
+option display_width 100000000000;
+option omit_zero_rows 1;
+option omit_zero_cols 1;
+display seasons;
+display years;
+display sum {c in comid_all} (ps_coef[c] * point_dec[c]);
+display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);
+display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);
+display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);

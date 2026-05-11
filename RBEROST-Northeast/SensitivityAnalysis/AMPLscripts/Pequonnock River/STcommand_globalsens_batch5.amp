@@ -1,0 +1,224 @@
+ 
+#WMOST Optimization Screening Tool AMPL command file
+
+set Bootstraps;
+
+let Bootstraps := 201 .. 250 by 1;
+
+display Bootstraps;
+
+# Set unique random seed for batch 5
+option randseed 1763560588;
+
+
+
+
+for {b in Bootstraps} {
+
+
+let loads_lim_N1_rev := Uniform(62577.5799815584, 76657.535477409);
+let loads_lim_P1_rev := Uniform(0, 0);
+	let agcost_frac_rev := Uniform(1,5/3);
+  repeat {
+	  for {a in ag_bmp} {
+	    let ag_frac_min_rev[a] := 0;
+	    let ag_frac_max_rev[a] := Uniform(0.7, 1); 
+	  };
+	} until sum {a in ag_bmp} ag_frac_min_rev[a] <= 1;
+	repeat {
+	for {r in ripbuf_bmp} {
+	  let ripbuf_frac_min_rev[r] := 0;
+	  let ripbuf_frac_max_rev[r] := Uniform(0.7, 1);
+	};
+	} until sum {r in ripbuf_bmp} ripbuf_frac_min_rev[r] <= 1;
+	repeat {
+	  for {u in urban_bmp} {
+	    for {o in cost_type} {
+	         let urban_costs_rev[u,o] := urban_costs[u,o];
+	    };
+	    let urban_frac_min_rev[u] := 0;
+	    let urban_frac_max_rev[u] := Uniform(0.7,1); 
+	    for {c in comid_all} {
+	      if u == 'Porous_Pavement_w_underdrain'
+	        then {let urban_design_depth_rev[c,u] := Uniform(8.6, 13.6);}
+	        else {let urban_design_depth_rev[c,u] := Uniform(0.1,2);};
+	    };
+	  };
+	} until sum {u in urban_bmp} urban_frac_min_rev[u] <= 1;
+	 
+# Initialize annual baseloads_N1_rev to zero
+for {c in comid_N1} {
+  for {l in loads_all} {
+    let baseloads_N1_rev[c,l] := 0;
+  };
+  for {r in ripbuf_bmp} {
+    let riparianremoval_N1_rev[c,r] := 0;
+  };
+  let riparianload_N1_rev[c] := 0;
+};
+# Sum seasonal loads with uncertainty to get annual totals
+for {c in comid_N1} {
+for {s in seasons} {
+for {y in years} {
+for {l in loads_all} {
+  let baseloads_N1_rev[c,l] := baseloads_N1_rev[c,l] + max(0, Normal(baseloads_N1[c,s,y,l], baseloads_N1_se[c,s,y,l]));
+};
+for {r in ripbuf_bmp} {
+  let riparianremoval_N1_rev[c,r] := riparianremoval_N1_rev[c,r] + max(0, Normal(riparianremoval_N1[c,s,y,r], riparianremoval_N1_se[c,s,y,r]));
+};
+  let riparianload_N1_rev[c] := riparianload_N1_rev[c] + max(0, Normal(riparianload_N1[c,s,y,'riparian'], riparianload_N1_se[c,s,y,'riparian']));
+};
+};
+};
+for {c in comid_all_N} {
+  for {a in ag_bmp} {
+    repeat {
+      let ag_effic_N_rev[c,a] := Normal(ag_effic_N[c,a], ag_effic_N_se[c,a]);
+    } until ag_effic_N_rev[c,a] <= 1;
+  };
+  for {p in point_c} {
+    let point_effic_N_rev[c,p] := Normal(point_effic_N[c,p], abs(point_effic_N[c,p]) * 0.2);
+  };
+  for {u in urban_bmp} {
+    repeat {
+      let urban_effic_N_rev[c,u] := Normal(urban_effic_N[c,u], urban_effic_N_se[c,u]);
+    } until urban_effic_N_rev[c,u] <= 1;
+  };
+};
+
+# Initialize annual baseloads_P1_rev to zero
+for {c in comid_P1} {
+  for {l in loads_all} {
+    let baseloads_P1_rev[c,l] := 0;
+  };
+  for {r in ripbuf_bmp} {
+    let riparianremoval_P1_rev[c,r] := 0;
+  };
+  let riparianload_P1_rev[c] := 0;
+};
+# Sum seasonal loads with uncertainty to get annual totals
+for {c in comid_P1} {
+for {s in seasons} {
+for {y in years} {
+for {l in loads_all: l != 'septic'} {
+  let baseloads_P1_rev[c,l] := baseloads_P1_rev[c,l] + max(0, Normal(baseloads_P1[c,s,y,l], baseloads_P1_se[c,s,y,l]));
+};
+for {r in ripbuf_bmp} {
+  let riparianremoval_P1_rev[c,r] := riparianremoval_P1_rev[c,r] + max(0, Normal(riparianremoval_P1[c,s,y,r], riparianremoval_P1_se[c,s,y,r]));
+};
+  let riparianload_P1_rev[c] := riparianload_P1_rev[c] + max(0, Normal(riparianload_P1[c,s,y,'riparian'], riparianload_P1_se[c,s,y,'riparian']));
+};
+};
+};
+for {c in comid_all_P} {
+  for {a in ag_bmp} {
+    repeat {
+      let ag_effic_P_rev[c,a] := Normal(ag_effic_P[c,a], ag_effic_P_se[c,a]);
+    } until ag_effic_P_rev[c,a] <=1;
+  };
+  for {p in point_c} {
+    let point_effic_P_rev[c,p] := Normal(point_effic_P[c,p], abs(point_effic_P[c,p]) * 0.2);
+  };
+  for {u in urban_bmp} {
+    repeat {
+      let urban_effic_P_rev[c,u] := Normal(urban_effic_P[c,u], urban_effic_P_se[c,u]);
+    } until urban_effic_P_rev[c,u] <= 1;
+  };
+};
+
+for {c in comid_all} {
+  	  for {u in urban_bmp} {
+	    repeat {
+	      let urban_bmp_implementationpotential_rev[c,u] :=  Normal(urban_bmp_implementationpotential[c,u], urban_bmp_implementationpotential_se[c,u]);
+	     } until 1 >= urban_bmp_implementationpotential_rev[c,u] >= 0;
+	  };
+  for {o in cost_type} {
+    repeat {
+      let point_costs_rev[c,o] := Normal(point_costs[c,o] * 1.15, point_costs[c,o] * 0.15);
+    } until point_costs_rev[c,o] >= 0;
+  };
+  
+  for {r in ripbuf_bmp} {
+  	 repeat {
+	      let unbuffered_banklength_rev[c,r] := Normal(unbuffered_banklength[c,r], unbuffered_banklength_se[c,r]);
+	     } until unbuffered_banklength_rev[c,r] >= 0;
+    repeat {
+      let ripbuf_costs_capital_rev[c,r] := Normal(ripbuf_costs_capital[c,r], ripbuf_costs_capital_se[c,r]);
+    } until ripbuf_costs_capital_rev[c,r] >= 0;
+    repeat { 
+      let ripbuf_costs_operations_rev[c,r] := Normal(ripbuf_costs_operations[c,r], ripbuf_costs_operations_se[c,r]);
+    } until ripbuf_costs_operations_rev[c,r] >= 0;
+  };
+  repeat {
+	    let total_banklength_rev[c] := Normal(total_banklength[c], 674.1);
+	   } until total_banklength_rev[c] >= max {r in ripbuf_bmp} unbuffered_banklength[c,r];
+  for {ar in area_sub} {
+    repeat {
+      let area_rev[c,ar] := Normal(area[c,ar], area_se[c,ar]);
+    } until area_rev[c,ar] >= 0;
+  };
+  
+  for {a in ag_bmp} {
+    repeat {
+      let ag_costs_capital_rev[c,a] := Normal(ag_costs_capital[c,a], ag_costs_capital_se[c,a]);
+    } until ag_costs_capital_rev[c,a] >= 0;
+    repeat {
+      let ag_costs_operations_rev[c,a] :=  Normal(ag_costs_operations[c,a], ag_costs_operations_se[c,a]);
+    } until ag_costs_operations_rev[c,a] >= 0;
+  };
+  
+  repeat {
+    let runoff_coeff_urban_rev[c,'urban'] := Normal(runoff_coeff_urban[c,'urban'], runoff_coeff_urban_se[c,'urban']);
+  } until 1 >= runoff_coeff_urban_rev[c,'urban'] >= 0;
+
+  repeat {
+    let urban_cost_adjustment_coef_rev[c] := Normal(urban_cost_adjustment_coef[c], urban_cost_adjustment_coef_se[c]);
+  } until urban_cost_adjustment_coef_rev[c] >= 0;
+  
+};
+
+solve;
+
+# Essential outputs for post-processing - compact format to avoid truncation
+printf "Bootstrap %d: ", b;
+if solve_result_num >= 0 and solve_result_num <= 99 then {
+  printf "SOLVED, Cost = %g\n", cost;
+  # Display solve status and cost in compact format
+  display solve_result_num, solve_result;
+  display cost;
+  
+  # Display loading limits used for this bootstrap
+  display loads_lim_N1_rev, loads_lim_P1_rev;
+  
+  # Display BMP spending results - essential for BMP analysis plots
+  option omit_zero_rows 1;
+  option omit_zero_cols 1;
+  display sum {c in comid_all} (ps_coef[c] * point_dec[c]);
+  display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);
+  display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);
+  display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);
+  
+  # Display individual WWTP facilities selected (for WWTP analysis)
+  display point_dec;
+  
+  # Display BMP implementation parameters - needed for sensitivity analysis
+  display urban_frac_max_rev;
+  display ripbuf_frac_max_rev;
+  display urban_design_depth_rev;
+  
+} else {
+  printf "FAILED, Result = %s\n", solve_result;
+  display solve_result_num, solve_result;
+}
+};	
+
+# Summary output after all bootstraps complete
+printf "\n=== GLOBAL SENSITIVITY ANALYSIS COMPLETE ===\n";
+printf "Batch 5 (bootstraps 201-250) completed successfully.\n";
+printf "Random seed used: 1763560588\n";
+
+# Optional: Add any final summary statistics or outputs here
+# Examples:
+# display "Final summary statistics";
+# option display_precision 6;
+
