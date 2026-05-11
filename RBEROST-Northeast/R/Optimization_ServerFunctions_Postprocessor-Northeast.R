@@ -3,6 +3,7 @@
 # PURPOSE: To allow users to input a text file and see the results of their NEOS optimization
 # BY: Cathy Chamberlin, earlier versions of the code by Kate Munson and Alyssa Le (ICF)
 # DATE: 9/23/2021
+# UPDATED BY: Craig Connolly, Naomi Detenbeck (EPA), 2025-2026
 ###########################################################################################
 
 # This file is NOT intended to be run by itself. It is sourced through Optimization_ServerFile.R. This file contains most of the code necessary for the postprocessor to run as functions.
@@ -854,12 +855,12 @@ calculate_septic_total <- function(septicresults, septicbmps) {
 make_areadf <- function(sparrowinputs, km2_to_ac, streamcatinputs) {
   comid_huc12 <- sparrowinputs %>%
     rename(comid = 1) %>%
-    select(c("comid", "HUC_12", "IncAreaKm2", "urban_km2")) %>%
+#    select(c("comid", "HUC_12", "IncAreaKm2", "urban_km2")) %>%
+    select(c("comid", "HUC_12", "IncAreaKm2")) %>%    
     mutate(HUC12_Char = str_pad(HUC_12, width = 12, pad = "0")) %>%
     select(COMID = comid,
            HUC_12 = HUC12_Char,
-           IncAreaKm2,
-           urban_km2)
+           IncAreaKm2)
   
   # Handle both single dataframe and list of dataframes
   if (is.data.frame(streamcatinputs)) {
@@ -880,25 +881,29 @@ make_areadf <- function(sparrowinputs, km2_to_ac, streamcatinputs) {
   } else {
     stop("streamcatinputs must be either a data frame or a list of data frames")
   }
+
+# ND added: For single data frame rename State to StateAbbrev
+# ND: EXTRACT AG AND URBAN AREAS TOGETHER HERE  
+  names(streamcat_combined) <- sub("State", "StateAbbrev", names(streamcat_combined), fixed = TRUE)
+  streamcat_crop_urb <- streamcat_combined %>%
+    select("COMID" = comid, "PctCrop2019Cat","PctUrbMd2019Cat","PctUrbHi2019Cat","WsAreaSqKm", "StateAbbrev") %>%
+    mutate(WsAreaAc = WsAreaSqKm / km2_to_ac) 
   
-  streamcat_crop <- streamcat_combined %>%
-    select("COMID" = comid, "PctCrop2019Cat", "WsAreaSqKm", "StateAbbrev") %>%
-    mutate(WsAreaAc = WsAreaSqKm / km2_to_ac)
-  
-  # Calculate available agricultural area
-  area <- merge(comid_huc12, streamcat_crop, by = "COMID")
+  # Calculate available agricultural and urban areas
+  area <- merge(comid_huc12, streamcat_crop_urb, by = "COMID")
   area <- area[!duplicated(area$COMID),] %>%
     mutate(ag_km2 = (PctCrop2019Cat / 100) * IncAreaKm2,
+           urban_km2 = ((PctCrop2019Cat + PctUrbMd2019Cat)/100) * IncAreaKm2,
            COMID = as.character(COMID))
   
   return(area)
+
 }
 
-
-merge_urban_results <- function(urbanresults, areadf, urbanbmps, km2_to_ac) {
+merge_urban_results <- function(urbanresults, area, urbanbmps, km2_to_ac) {
   # Merge the SPARROW and StreamCat data to the urban BMP results
   urban_results_HUCmerge <- merge(urbanresults,
-                                  areadf,
+                                  area,
                                   by = "COMID",
                                   all.x = TRUE)
   
@@ -1072,7 +1077,7 @@ merge_ripbuf_results <- function(
     ftperkm <- 3280.84
     
     ripbuf_results_HUCmerge <- ripbuf_results_HUCmerge %>%
-      mutate(totalbanklength_ft = LENGTHKM * 2 * ftperkm) %>%
+#      mutate(totalbanklength_ft = LENGTHKM * 2 * ftperkm) %>% #ND totalbanklength_ft already added
       select(
         COMID,
         HUC_12,
