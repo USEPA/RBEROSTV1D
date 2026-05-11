@@ -1,7 +1,7 @@
 ---
 title: "Run RBEROST"
 date: "5/6/2021"
-date (updated): "8/4/2025"
+date (updated): "5/11/2026"
 output: html_document
 ---
 
@@ -38,6 +38,7 @@ library(shinycssloaders)
 library(tidygraph)
 library(bit64)
 library(beepr)
+library(foreign)
 
 # Alternative: Use pacman for backward compatibility (if preferred)
 # Note: pacman will use the renv-managed packages
@@ -47,18 +48,14 @@ library(beepr)
 
 ## Download lfs files from Zenodo (required unless using git lfs to download large files)
 
-When you download the repository from github, only placeholders for large files (>100MB) listed
-in the .gitattributes file will be downloaded.  If you are using git you can install lfs and
-download these in git.  Otherwise, you can download these files directly from a Zenodo archive
-by cutting and pasting each of the following urls into a browser (or pointing to each of the urls below and usingv<Ctrl-Click>) and saving each into the .\RBEROSTV1D\RBEROST-Northeast\Preprocessing\Inputs folder then unzipping to that folder.  Don't create additional subdirectories under Inputs when unzipping any .zip files.
+When you download the repository from github, only placeholders for large files (\>100MB) listed in the .gitattributes file will be downloaded. If you are using git you can install lfs and download these in git. Otherwise, you can download these files directly from a Zenodo archive by cutting and pasting each of the following urls into a browser (or pointing to each of the urls below and using <Ctrl-Click>) and saving each into the .\RBEROSTV1D\RBEROST-Northeast\Preprocessing\Inputs folder then unzipping to that folder. Don't create additional subdirectories under Inputs when unzipping any .zip files.
 
-https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tn.csv?download=1
-https://zenodo.org/record/19186583/files/Predict_NoBFlowN_WSeptic.csv?download=1
-https://zenodo.org/record/19186583/files/Predict_P.csv?download=1
-https://zenodo.org/record/19186583/files/ne_dynamic_sparrow_se_tp.csv?download=1
-https://zenodo.org/record/19186583/files/ne_sparrow_model_input.csv?download=1
-https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF24.csv?download=1
-https://zenodo.org/record/19186583/files/RiparianEfficiencies_ICF25.csv?download=1"
+https://zenodo.org/record/20127975/files/ne_dynamic_sparrow_se_tn_final.zip?download=1
+https://zenodo.org/record/20127975/files/Predict_NoBFlowN_WSeptic_final.zip?download=1
+https://zenodo.org/record/20127975/files/Predict_P_final.zip?download=1
+https://zenodo.org/record/20127975/files/ne_dynamic_sparrow_se_tp_final.zip?download=1
+https://zenodo.org/record/20127975/files/ne_sparrow_model_input.zip?download=1
+https://zenodo.org/record/20127975/files/RiparianEfficiencies_ICF25.zip?download=1"
 
 ## Run Batch Preprocessor
 
@@ -72,7 +69,7 @@ To run the preprocessor, change any lines of code necessary and click the green 
 ### Set file paths and required file names ###############################################################################################
 
 # This variable represents the working directory where RBEROST is located. You will need to write out the full path to your RBEROST inputs.
-working_dir <- "./"
+working_dir <- "C:/Users/ndetenbe/OneDrive - Environmental Protection Agency (EPA)/RBEROSTV1D/"
 
 # This variable represents the location of input data files used to develop AMPL model files. If you opened RBEROST through the Tier_1_Optimization-SSWR_5_3_2.Rproj file, the '.' represents the folder where the Tier_1_Optimization-SSWR_5_3_2.Rproj file is located. If you did not open this file through the R project you may need to write out the full path to your RBEROST inputs.
 InPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/")
@@ -81,7 +78,7 @@ InPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/")
 OutPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Outputs/")
 
 # Define the name of the UserSpecs input file. This file contains the user specifications for the optimization, including the BMPs that will be considered in the optimization. If you wish to change which BMPs are considered, you can edit this file.
-user_specs_name <- "01_UserSpecs_BMPs_wCS_NoSeptic.csv" # 01_UserSpecs_BMPs_wCS_NoSeptic.csv
+user_specs_name <- "file_01_UserSpecs_BMPs_wCS_2025.csv" # 01_UserSpecs_BMPs_wCS_NoSeptic.csv
 
 ### User Interface ###############################################################################################
 MODE <- "Select"
@@ -125,7 +122,7 @@ scenariostepchange <- 0.01
 # Science base reference: https://www.sciencebase.gov/catalog/item/5d4192aee4b01d82ce8da477
 
 # NEOS configuration
-email <- "56407@icf.com"
+email <- "detenbeck.naomi@epa.gov"
 NEOSresults <- "RBEROST-Northeast/Preprocessing/Outputs/Batch Results/"
 comments <- "Batch watershed optimization run."
 
@@ -136,32 +133,38 @@ all_watersheds <- c(
     "Linsley Pond Cedar Pond",
     "Byram River",
     "Farm River",
-    "Little Narragansett Bay",
+    "Housatonic River", 
+    "Kenosia Lake",
     "Lower Connecticut River",
     "Lower Middle Connecticut River",
-    "Mystic Harbor",
     "New Haven Harbor",
     "Niantic Bay",
     "Norwalk Harbor",
     "Pequonnock River",
     "Saugatuck Estuary",
     "Southport Harbor Sasco Brook",
-    "Stonington Harbor",
     "Thames River",
     "Upper Connecticut River",
-    "Upper Middle Connecticut River"
-     # The following watersheds are known to cause errors
-     # The majority of the following watersheds have been identified as problematic due to a lack of data in the SPARROW dataset.
-     # "Housatonic River",
-     # "Kenosia Lake",
+    "Upper Middle Connecticut River",
+  "Hempstead Harbor",
+  "Huntington Harbor",
+  "Lloyd Harbor",
+  "Manhasset Bay",
+  "Mt. Sinai Harbor",
+  "Nissequogue River",
+  "Northport-Centerport Harbor Complex",
+  "Oyster Bay Cold Spring Harbor Complex",
+  "Port Jefferson Harbor",
+  "Stony Brook Harbor"
 )
 
 # Watersheds to exclude (known to cause errors)
 exclude_watersheds <- c(
+  
 )
 
 setwd(working_dir) # "../"
-source("./RBEROST-Northeast/R/03_BatchRBEROSTRun-Northeast_V1.R")
+source(paste0(working_dir,"./RBEROST-Northeast/R/03_BatchRBEROSTRun-Northeast_V1.R"))
 ```
 
 ## Run Postprocessor
