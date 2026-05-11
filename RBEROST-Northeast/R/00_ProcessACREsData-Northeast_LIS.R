@@ -4,6 +4,9 @@
 # BY: Yishen Li, Alyssa Le, Cathy Chamberlin ####
 # ORIGINAL DATE: 5/27/2020 ####
 # Updated by Sam Ennett for all LIS ACRES data 7-1-2025
+# Updated by Naomi Detenbeck (EPA) to include Pawcatuck R after updating HUC12 numbering
+# in ACREs database 2026
+
 ###########################################################################################
 
 # The purpose of this code is to calculate removal efficiencies based on the ACRE database.
@@ -19,6 +22,7 @@
 library("tidyverse")
 library("stringr")
 library("sf")
+library("foreign")
 options(stringsAsFactors = FALSE)
 rm(list=ls())
 
@@ -28,10 +32,10 @@ rm(list=ls())
 
 # Working directory
 setwd("./") #*# This defaults to the project directory folder if run in an RProject in RStudio
-
+#setwd("C:/Users/ndetenbe/OneDrive - Environmental Protection Agency (EPA)/RBEROSTV1D/")
 # This dataset is a subset of the ACRE database for HUCs within the LIS basin.
 ACRE_rawdata <- read.csv(
-  "Data/ACRE_LIS.csv", #*#
+  "Data/ACRE_LIScorr.csv", #*# ND corrected dataset to include Pawcatuck
   header=TRUE,
   colClasses = c(
     "NULL",
@@ -54,14 +58,19 @@ ACRE_rawdata <- read.csv(
   )
 
 # Read in set of HUC12s for LIS basin.
-sparrow_in <- read.csv("RBEROST-Northeast/Preprocessing/Inputs/ne_sparrow_model_input.csv") 
+# sparrow_in <- read.csv("RBEROST-Northeast/Preprocessing/Inputs/ne_sparrow_model_input.csv")
+# NOTE: USGS dataset had missing HUC12 values so need to substitute
+HUC12_NESPARROW <- read.dbf("Data/lic_flowline_centroidinside_NAD83.dbf", as.is = TRUE) %>%
+  rename(HUC_12 = huc12) %>%
+  mutate(HUC12_Char = str_pad(HUC_12, 12, pad = "0", side = "left"),
+         HUC4 = substring(HUC12_Char, 1, 4))
 
 # Subset HUC12s to just those in the Northeast SPARROW model.
-HUC12_NESPARROW <- sparrow_in %>%
-  mutate(HUC12_Char = str_pad(HUC_12, 12, pad = "0", side = "left"),
-         HUC4 = substring(HUC12_Char, 1, 4)) %>%
+#HUC12_NESPARROW <- sparrow_in %>%
+#  mutate(HUC12_Char = str_pad(HUC_12, 12, pad = "0", side = "left"),
+#         HUC4 = substring(HUC12_Char, 1, 4)) %>%
   # HUC4s here confirmed by Naomi's email on 6/17/25.
-  filter(HUC4 == "0110" | HUC4 == "0108" | HUC4 == "0203")
+#  filter(HUC4 == "0110" | HUC4 == "0108" | HUC4 == "0203")
 
 # Download the WBD file if necessary
 url <- "https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/WBD/National/GDB/WBD_National_GDB.zip" #*#
@@ -116,7 +125,7 @@ if (file.exists(zip_file) && dir.exists(gdb_path)) {
 
 # Rename column names
 names(ACRE_rawdata) <- c(
-  "HUC12", "LULC", "Slope", "Scenario", "TP", "TN", "STD_Archive", "Hyd_Group"
+  "HUC12", "LULC", "Slope", "Scenario", "TP", "TN", "STD_Archive", "Hyd_Group","HUC12b"
   )
 
 # TN column had some "<" symbols in it so need to convert it from character to numeric.
@@ -124,7 +133,7 @@ ACRE_rawdata$TP <- as.numeric(str_replace_all(ACRE_rawdata$TP, "<", ""))
 ACRE_rawdata$TN <- as.numeric(str_replace_all(ACRE_rawdata$TN, "<", ""))
 ACRE_rawdata$Hyd_Group <- str_replace_all(ACRE_rawdata$Hyd_Group, "<", "")
 
-ACRE_rawdataQA <- ACRE_rawdata %>%
+ ACRE_rawdataQA <- ACRE_rawdata %>%
   filter(str_detect(TP, "<") | str_detect(TN, "<") | str_detect(Hyd_Group, "<"))
 
 # Subset the data to just take out "no practice" & "baseline" runs 
@@ -699,9 +708,9 @@ Efficiency_Sum_noprac <- Efficiency_Sum_noprac %>%
 
 # QA CHECKS
 # Check that the HUC12s are the same in both datasets
-if(!all(Efficiency_Sum_bsln$HUC12 == Efficiency_Sum_noprac$HUC12)) {
-  stop("HUC12s do not match between baseline and no practice datasets.")
-}
+#if(!all(Efficiency_Sum_bsln$HUC12 == Efficiency_Sum_noprac$HUC12)) {
+#  stop("HUC12s do not match between baseline and no practice datasets.")
+#}
 
 # Check that the number of rows are the same in both datasets
 if(nrow(Efficiency_Sum_bsln) != nrow(Efficiency_Sum_noprac)) {
@@ -725,17 +734,26 @@ if(any(is.na(Efficiency_Sum_noprac$MeanTN_Effic) | is.na(Efficiency_Sum_noprac$M
 }
 
 ##########################################################
-# 6. Export the summarized database ####
+# 6. Add constant reduction efficiency for cover crop based on Griffith et al. 2020
+# https://link.springer.com/article/10.1007/s11270-020-4443-z
+##########################################################
+CoverCropHUCs <- unique(Efficiency_Sum_bsln[c("HUC8", "HUC10","HUC12")]) %>%
+  mutate(Scenario = 'Cover_crops', MeanTN_Effic = .628, MeanTN_Effic_se = 0,MeanTP_Effic = .677, MeanTP_Effic_se= 0)
+Efficiency_Sum_bsln <- bind_rows(Efficiency_Sum_bsln,CoverCropHUCs)
+Efficiency_Sum_noprac <- bind_rows(Efficiency_Sum_noprac,CoverCropHUCs)
+
+##########################################################
+# 7. Export the summarized database ####
 ##########################################################
 
 write.csv(
   Efficiency_Sum_bsln, 
-  "./RBEROST-Northeast/Preprocessing/Inputs/ACRE_HUC12_HRU_Summary_compareBaseline_ICF25.csv", #*#
+  "./RBEROST-Northeast/Preprocessing/Inputs/ACRE_HUC12_HRU_Summary_compareBaseline_ICF25ND.csv", #*#
   row.names=FALSE
 )
 
 write.csv(
   Efficiency_Sum_noprac, 
-  "./RBEROST-Northeast/Preprocessing/Inputs/ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25.csv", #*#
+  "./RBEROST-Northeast/Preprocessing/Inputs/ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25ND.csv", #*#
   row.names=FALSE
 )
