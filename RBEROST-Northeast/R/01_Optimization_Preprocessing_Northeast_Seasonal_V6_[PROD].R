@@ -43,11 +43,10 @@ user_specs_BMPs <- fread(
 ## Specifications for loading targets for watersheds in LIS model
 user_specs_loadingtargets <- fread(
   paste0(InPath, "01_UserSpecs_loadingtargets.csv")
-)#   %>% 
-# mutate(Percent_Reduction = case_when(watershed_name == "Nissequogue River" & TN_or_TP == "TN" ~ 0.35))
-# mutate(Percent_Reduction = case_when(watershed_name == "Upper Middle Connecticut River" & TN_or_TP == "TN" ~ Percent_Reduction*.9))
-
-
+# The following can be uncommented and used to run a series of user-specified load reductions
+# for a watershed if interest without changing the full loadings file
+)# %>%   
+#mutate(Percent_Reduction = case_when(watershed_name == "Upper Connecticut River" & TN_or_TP == "TP" ~ 0.10))
 
 
 ## Terminal catchments/comids
@@ -128,10 +127,37 @@ load_perc_reduc_tp <- foreach(i = 1:length(target_selection)) %do% {
 ## Read raw SPARROW data inputs -----
 
 ### USGS Northeastern SPARROW Model Input Data, 2020: https://www.sciencebase.gov/catalog/item/5d4192aee4b01d82ce8da477
-ne_comid_huc12 <- fread(paste(InPath,"ne_sparrow_model_input.csv",sep="")) #*#
-ne_comid_huc12$HUC_12_Rev <- str_pad(ne_comid_huc12$HUC_12, width=12, pad="0", side = "left")  #*#
+#NOTE: Some HUC12 values are missing in the NE SPARROW dataset causing missing ag efficiencies
+#later on due to failed matches so created new comid-HUC12 file for LIS comids
+# This is used to fill in missing HUC12s for LIS only in ne_comid_huc12
+# An abbreviated version, ne_sparrow_model_input_short.csv, is created that has corrected HUC12s
+# for LIS catchments and only variables needed for RBEROSTv1D so this section only needs to be
+# run once, after which ne_sparrow_model_input_short.csv will be read in instead
+# In the future if the extent of RBEROSTv1D is expanded to cover other portions of the Northeast
+# additional missing HUC12s may need to be filled in and this section re-run.
 
-# Fix - add missing catchment areas for South Shore in SPARROW loading files
+complete_comid_huc12 <- read.dbf(paste0(InPath,"lic_flowline_centroidinside_NAD83.dbf"), as.is = TRUE) %>%
+  mutate(ComID = comid)
+
+# ND: need total banklength to make up for missing stream lengths in Sparrow file
+riparian.existingbuffer <- fread(paste0(InPath, "LengthinBuffer_ICF25ND.csv")) #*# updated
+
+ne_comid_huc12 <- fread(paste0(InPath,"ne_sparrow_model_input.csv",sep="")) %>%
+  select(ComID,TermFlag,IncAreaKm2,DivFrac,HUC_12,urban_km2) %>% # keep only subset needed for RBEROST
+  left_join(complete_comid_huc12, by = "ComID") %>% # fill in missing huc12 values for LIS
+  mutate(HUC_12 = if_else(is.na(HUC_12), as.integer64(huc12), HUC_12)) %>%
+  mutate(HUC_12_Rev = huc12) %>% 
+  rename(comid_old = comid) %>% #rename to prevent conflict in later renaming of ComID
+  mutate(urban_km2 = -99) %>% # fill in with missing value to prevent later error message
+# ND: urban_km2 to be calculated from streamcat 2019 later
+  left_join(riparian.existingbuffer|>select(COMID,totalbanklength_ft), by = c("ComID" = "COMID")) 
+# use totalbanklength_ft instead of LENGTHKM in SPARROW which has missing values
+# already character with leading zero so don't need to transform as below #*# 
+# ne_comid_huc12$HUC_12_Rev <- str_pad(ne_comid_huc12$huc12, width=12, pad="0", side = "left")  #*#
+
+write.csv(ne_comid_huc12,file = paste0(InPath,"ne_sparrow_model_input_short.csv"), row.names = FALSE)
+
+# Fixed - added missing catchment areas for South Shore in SPARROW loading files
 library(foreign)
 SShore_catchareas <- read.dbf(paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/Catchment_R2_ClipLIS.dbf"), as.is = TRUE) %>% 
   mutate(FEATUREID = as.character(FEATUREID)) %>%
@@ -139,14 +165,15 @@ SShore_catchareas <- read.dbf(paste0(working_dir,"RBEROST-Northeast/Preprocessin
 ### USGS Northeastern SPARROW Seasonal Model Output Data
 print("Reading in SPARROW TN data...")
 sparrow_cons_out_tn <- fread(
-  paste(InPath,"Predict_NoBFlowN_WSeptic.csv",sep=""), data.table = FALSE) %>% #*#
-# Use updated loads including S Shore watersheds
-#  paste(InPath,"Predict_NoBFlowN_WSeptic_CTC.csv",sep=""), data.table = FALSE) %>%  
+#  paste(InPath,"Predict_NoBFlowN_WSeptic.csv",sep=""), data.table = FALSE) %>% #*#
+# ND: Use updated loads including S Shore watersheds and final SPARROW model data
+  paste(InPath,"Predict_NoBFlowN_WSeptic_final.csv",sep=""), data.table = FALSE) %>%  
   # TN model is missing a total incremental load variable, create one:
   mutate(
     PLOAD_INC_TOTAL = rowSums(
       cbind(
-        PLOAD_INC_PMN, PLOAD_INC_ATN, PLOAD_INC_SCS, PLOAD_INC_URB_NoSeptic,
+#        PLOAD_INC_PMN, PLOAD_INC_ATN, PLOAD_INC_SCS, PLOAD_INC_URB_NoSeptic,# ND updated name
+        PLOAD_INC_PMN, PLOAD_INC_ATN, PLOAD_INC_SCS, PLOAD_INC_URB,       
         PLOAD_INC_BFN, PLOAD_INC_AFN, PLOAD_INC_DFN, PLOAD_INC_AMN,
         PLOAD_INC_STO, SepticLoadtoReachkgN #, PLOAD_INC_ST
       ),
@@ -166,7 +193,8 @@ sparrow_cons_out_tn <- fread(
          # Atmospheric Loads
          in_atmo = PLOAD_INC_ATN,
          # Urban Land Loads
-         in_urb = PLOAD_INC_URB_NoSeptic,
+#         in_urb = PLOAD_INC_URB_NoSeptic, # ND renamed
+         in_urb = PLOAD_INC_URB,         
          in_fert_dev = PLOAD_INC_DFN,
          # Septic load
          in_septic = SepticLoadtoReachkgN
@@ -206,9 +234,9 @@ if (nrow(sparrow_cons_out_tn %>%
 }
 
 ## TN standard errors
-tn_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tn.csv")) #*#
-# Updated loads with S Shore watersheds
-# tn_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tn_CTC.csv")) 
+# tn_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tn.csv")) #*#
+# Updated loads with S Shore watersheds and final SPARROW model loads
+tn_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tn_final.csv")) 
 
 tn_sparrow_se_new <- tn_sparrow_se %>%
   mutate(
@@ -218,17 +246,18 @@ tn_sparrow_se_new <- tn_sparrow_se %>%
     comid = as.character(str_sub(comid_time, 1, -4))
   ) %>%
   select(comid, comid_time, year, year_season, season, starts_with("SE_")) %>%
-  select(comid, comid_time, year, year_season, season, contains("INC"))
+  select(comid, comid_time, year, year_season, season, contains("INC"),SE_SepticLoadtoReachkgN)
 
 # tn_sparrow_se_new_check <- tn_sparrow_se_new %>% filter(comid == 9509276) #*#
 
 tn_se <- tn_sparrow_se_new %>%
   select(-c(comid_time, year_season)) %>%
   filter(year %in% model_years) %>%
-  mutate(sin_total = sqrt(SE_PLOAD_INC_ATN ^ 2 + SE_PLOAD_INC_SCS ^ 2 + SE_PLOAD_INC_BFN ^ 2 + SE_PLOAD_INC_STO ^ 2 + SE_PLOAD_INC_PMN ^ 2 + SE_PLOAD_INC_AMN ^ 2 + SE_PLOAD_INC_URB ^ 2),
-         sin_other = sqrt(SE_PLOAD_INC_ATN ^ 2 + SE_PLOAD_INC_SCS ^ 2 + SE_PLOAD_INC_BFN ^ 2),
+  # added missing septic SE^2 N.D.
+  mutate(sin_total = sqrt(SE_PLOAD_INC_ATN ^ 2 + SE_PLOAD_INC_SCS ^ 2 + SE_PLOAD_INC_BFN ^ 2 + SE_PLOAD_INC_STO ^ 2 + SE_PLOAD_INC_PMN ^ 2 + SE_PLOAD_INC_AMN ^ 2 + SE_PLOAD_INC_URB ^ 2 + SE_SepticLoadtoReachkgN ^ 2),
+         sin_other = sqrt(SE_PLOAD_INC_ATN ^ 2 + SE_PLOAD_INC_SCS ^ 2 + SE_PLOAD_INC_BFN ^ 2 + SE_SepticLoadtoReachkgN ^ 2),
          sin_storage = SE_PLOAD_INC_STO,
-         sin_septic = 0,
+         sin_septic = SE_SepticLoadtoReachkgN,
          sin_fert_ag = 0, # not present in SPARROW data with SE
          sin_fert_dev = 0) %>% # not present in SPARROW data with SE
   rename(
@@ -244,9 +273,11 @@ sparrow_cons_out_tn <- merge(sparrow_cons_out_tn, tn_se, by = c("comid", "year",
 ### Rename columns to match static SPARROW
 print("Reading in SPARROW TP data...")
 sparrow_cons_out_tp <- fread(
-  paste(InPath,"Predict_P.csv",sep=""), data.table = FALSE) %>% #*#
-# Updated loadings with S Shore watersheds
-#  paste(InPath,"Predict_P_CTC.csv",sep=""), data.table = FALSE) %>%  
+#  paste(InPath,"Predict_P.csv",sep=""), data.table = FALSE) %>% #*#
+# ND: Updated loadings with S Shore watersheds and final USGS SPARROW loads
+ paste(InPath,"Predict_P_final.csv",sep=""), data.table = FALSE) %>% 
+  mutate(PLOAD_INC_SED = 0) %>% # ND: N.S. in SPARROW model %>%
+  mutate(PLOAD_INC_STO = 0) %>% # ND: N.S. in SPARROW model %>%
   mutate(ip = PLOAD_INC_PMP+PLOAD_INC_SED+PLOAD_INC_SCS+PLOAD_INC_URB+PLOAD_INC_FOR+PLOAD_INC_AFP+PLOAD_INC_ATN+PLOAD_INC_AMP+PLOAD_INC_STO, #+PLOAD_INC_ST 
          year_season = str_sub(comid_time, -3),
          year = str_sub(year_season, 1, 2)) %>%
@@ -261,6 +292,8 @@ sparrow_cons_out_tp <- fread(
          ip_urb = PLOAD_INC_URB) #*#
 
 ### Create correct season column
+# ND: added this because season is missing as variable
+sparrow_cons_out_tp$season <- as.character(str_sub(sparrow_cons_out_tp$year_season, 3))
 if (any(is.na(sparrow_cons_out_tp$season))) {
   sparrow_cons_out_tp$season <- as.character(str_sub(sparrow_cons_out_tp$year_season, 3))
 }
@@ -295,9 +328,9 @@ if (nrow(sparrow_cons_out_tp %>%
 }
 
 ## TP standard errors
-tp_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tp.csv")) #*#
-# No updated file at this point
-# tp_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tp_CTC.csv"))
+# tp_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tp.csv")) #*#
+# Updated file with final SPARROW model outputs
+tp_sparrow_se <- fread(paste0(InPath,"ne_dynamic_sparrow_se_tp_final.csv"))
 
 
 tp_sparrow_se_new <- tp_sparrow_se %>%
@@ -391,7 +424,9 @@ if (use_threshold) {
 
 # Overwrite year 20 transfer coefficients, no Y21S1 to compare to
 sm_P$coeff <- ifelse(sm_P$year == 20 & sm_P$season == 4, 0, sm_P$coeff)
-
+# ND: Set P transfer coefficient to zero because P storage term in dynamic SPARROW
+# model is insignificant so all subsequent storage terms should be zero
+sm_P$coeff <- 0
 #
 #
 ## Read in STREAMCAT API data -----
@@ -404,6 +439,7 @@ StreamCat_api$comid <- as.character(StreamCat_api$comid)
 
 ### Change all COMID columns to lower case
 names(ne_comid_huc12)[names(ne_comid_huc12) == "ComID"] <- "comid"
+# ND comid already present from matched comid-HUC12 dataset for LIS Basin so don't copy over
 # Note to user: if making adjustment to SPARROW region, must identify which column names that reflect agricultural, point, and urban 
 # nutrient sources based on SPARROW regional model metadata. 
 
@@ -461,14 +497,18 @@ select(c("comid","PctCrop2019Cat", "PctUrbHi2019Cat", "PctUrbLo2019Cat",
 "PctUrbMd2019Cat", "PctUrbOp2019Cat")) #*#
 
 ### Sum urban sub-designations to get total urban area
+#streamcat_ag_urban$urban_pct <- with(streamcat_ag_urban, 
+#PctUrbHi2019Cat+PctUrbLo2019Cat+PctUrbMd2019Cat+PctUrbOp2019Cat)
+# ND: Revise to be consistent with definition of urban area in dynamic SPARROW
 streamcat_ag_urban$urban_pct <- with(streamcat_ag_urban, 
-PctUrbHi2019Cat+PctUrbLo2019Cat+PctUrbMd2019Cat+PctUrbOp2019Cat)
+PctUrbHi2019Cat+PctUrbMd2019Cat)
 
 ### Convert the sparrow input area from KM to acres
 temp_sparrow_area$inc_ac <- temp_sparrow_area$inc_area*km2_to_ac #*#
 
 ### Use the streamcat area percentages to idenitfy ag and urban areas in each catchment
-temp_area <- merge(temp_sparrow_area, streamcat_ag_urban, by="comid")
+# temp_area <- merge(temp_sparrow_area, streamcat_ag_urban, by="comid")
+temp_area <- left_join(temp_sparrow_area, streamcat_ag_urban, by="comid") #ND get rid of excess LU data not in area of interest
 
 # Fill missing values with zeros
 temp_area[is.na(temp_area)] <- 0
@@ -556,7 +596,7 @@ septic.conversion_totals <- septic.conversion_raw%>%
     total_conv_parcels = sum(SewerConversionParcels),
   )
 septic.conversion <- septic.conversion_raw%>%
-  filter(SewerConversionClass != 0)%>%
+#  filter(SewerConversionClass != 0) %>% # ND keep septic_convert records w zero eff
   # fix: change comid type to character to allow matches
   mutate(comid = as.character(comid)) %>%
   group_by(comid)%>%
@@ -583,12 +623,9 @@ rm(total_septic_totals_temp)
 
 ### Preprocessed Riparian Data
 # fixed riparian files
-riparian.loadings <- fread(paste0(InPath, "RiparianLoadings_ICF25.csv")) #*#
-riparian.existingbuffer <- fread(paste0(InPath, "LengthinBuffer_ICF24.csv")) #*#
+riparian.loadings <- fread(paste0(InPath, "RiparianLoadings_ICF25ND.csv")) #*# updated
+riparian.existingbuffer <- fread(paste0(InPath, "LengthinBuffer_ICF25ND.csv")) #*# updated
 riparian.efficiencies <- fread(paste0(InPath, "RiparianEfficiencies_ICF24.csv")) #*#
-
-# riparian.loadings <- fread(paste0(InPath, "RiparianLoadings_ICF25ND.csv"))
-
 
 if (!is.character(riparian.loadings$COMID)) {
   riparian.loadings$comid <- as.character(riparian.loadings$COMID)
@@ -601,7 +638,8 @@ if (!is.character(riparian.loadings$season)) {
 
  if (!is.character(riparian.existingbuffer$comid)) { 
   riparian.existingbuffer$comid <- as.character(riparian.existingbuffer$comid)
-}
+ }
+riparian.existingbuffer <- riparian.existingbuffer %>% mutate(comid = as.character(COMID))
 
 if (!is.character(riparian.efficiencies$comid)) {  
   riparian.efficiencies$comid <- as.character(riparian.efficiencies$comid)
@@ -631,6 +669,7 @@ if(length(RiparianBuffer_BMPs) > 0) {
     RiparianBuffer_BMPs_tmp <- RiparianBuffer_BMPs[i]
     
     riparian.existingbuffer %>%
+      mutate(comid = as.character(COMID)) %>% #ND Fix name so merge will occur
       select(
         comid,
         totalbanklength_ft, 
@@ -655,6 +694,61 @@ if(length(RiparianBuffer_BMPs) > 0) {
       rename_with(.fn = ~paste(RiparianBuffer_BMPs_tmp), .cols = "maximp")
   }
 }
+
+# try with i = 1, then i = 2 and compare lengths
+RiparianBuffer_BMPs_tmp <- RiparianBuffer_BMPs[1]
+
+riparian.existingbuffer1 <- riparian.existingbuffer %>%
+  select(
+    comid,
+    totalbanklength_ft, 
+    contains(as.character(UserSpecs_bufferwidth_nearest[1]))
+  ) %>%
+  rename_with(
+    .fn = ~gsub(
+      paste0("_", UserSpecs_bufferwidth_nearest[i], "ft_ft"), '', .
+    ), 
+    .col = contains(as.character(UserSpecs_bufferwidth_nearest[1]))
+  ) %>%
+  mutate(
+    maximp = case_when(
+      RiparianBuffer_BMPs_tmp == "Forested_Buffer" ~ 
+        totalbanklength_ft - Forest_buffer,
+      RiparianBuffer_BMPs_tmp == "Grassed_Buffer" ~ 
+        totalbanklength_ft - Forest_buffer - Grass_buffer
+    )
+  ) %>%
+  mutate(maximp = case_when(maximp < 0 ~ 0, maximp >= 0 ~ maximp)) %>%
+  select(comid, totalbanklength_ft, maximp) %>%      
+  rename_with(.fn = ~paste(RiparianBuffer_BMPs_tmp), .cols = "maximp")
+
+# try with i = 2
+RiparianBuffer_BMPs_tmp <- RiparianBuffer_BMPs[2]
+
+riparian.existingbuffer2 <- riparian.existingbuffer %>%
+  select(
+    comid,
+    totalbanklength_ft, 
+    contains(as.character(UserSpecs_bufferwidth_nearest[2]))
+  ) %>%
+  rename_with(
+    .fn = ~gsub(
+      paste0("_", UserSpecs_bufferwidth_nearest[i], "ft_ft"), '', .
+    ), 
+    .col = contains(as.character(UserSpecs_bufferwidth_nearest[2]))
+  ) %>%
+  mutate(
+    maximp = case_when(
+      RiparianBuffer_BMPs_tmp == "Forested_Buffer" ~ 
+        totalbanklength_ft - Forest_buffer,
+      RiparianBuffer_BMPs_tmp == "Grassed_Buffer" ~ 
+        totalbanklength_ft - Forest_buffer - Grass_buffer
+    )
+  ) %>%
+  mutate(maximp = case_when(maximp < 0 ~ 0, maximp >= 0 ~ maximp)) %>%
+  select(comid, totalbanklength_ft, maximp) %>%      
+  rename_with(.fn = ~paste(RiparianBuffer_BMPs_tmp), .cols = "maximp")
+
 
 #
 #
@@ -1264,13 +1358,13 @@ temp_ag_effic_fert_man_cast_tp <- reshape2::dcast(
 
 ### Read in efficiency data for ACRE database BMPs
 temp_acre <- if(AgBMPcomparison == "No Practice") {
- fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25.csv")) #*#
-# Use updated data that includes Pawcatuck and S Shore
-  # fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25ND.csv"))  
+# fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25.csv")) #*#
+# Use updated data that includes Pawcatuck and S Shore and cover crop efficiency
+ fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25ND.csv"))  
 } else if(AgBMPcomparison == "Baseline") {
- fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25.csv")) #*#
-  # Use updated data that includes Pawcatuck and S Shore  
-  # fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25ND.csv"))  
+# fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25.csv")) #*#
+  # Use updated data that includes Pawcatuck and S Shore and cover crop efficiency 
+fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25ND.csv"))  
 } else {
   stop(
     'AgBMPcomparison must be set to either "No Practice" or "Baseline", quotation marks included.'
@@ -1327,6 +1421,7 @@ temp_acre_cast_tn_HUC12 <- temp_acre_cast_tn %>%
 
 ACRE_BMPs <- names(temp_acre_cast_tn[, -c(1:3)])
 
+#PROBLEM - HUC12 MISSING FOR SELECTED COMIDS
 reaches_huc12_tn <- ne_comid_huc12 %>% 
   filter(comid %in% reaches_TN_target$catchment_comid) %>% 
   select(comid, HUC12 = HUC_12_Rev)  %>%
@@ -1988,6 +2083,21 @@ if(length(Septic_BMPs) > 0 & septic_data_available) {
   )
 }
 
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+      cat(
+        paste0("\ndisplay loads_lim_N1",";"),
+        file = paste(OutPath, "STcommand_seasonal.amp", sep=""),
+        append = T
+      )
+    }
+
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP[user_specs_loadingtargets$watershed_name %in% target_selection]) {
+      cat(
+        paste0("\ndisplay loads_lim_P1", ";"),
+        file = paste(OutPath, "STcommand_seasonal.amp", sep=""),
+        append = T
+      )
+    }
 #
 #
 #
@@ -2049,9 +2159,12 @@ if(exists("septic.upgrade") && nrow(septic.upgrade) > 0) {
 }
 
 # Add sewer conversion BMP if available in the septic.conversion data
-if(exists("septic.conversion") && nrow(septic.conversion) > 0) {
-  available_septic_bmps <- c(available_septic_bmps, "Sewer_convert")
-}
+#if(exists("septic.conversion") && nrow(septic.conversion) > 0) {
+#  available_septic_bmps <- c(available_septic_bmps, "Sewer_convert")
+#}
+
+# ND: Add sewer conversion BMP even if not available to avoid AMPL error
+available_septic_bmps <- c(available_septic_bmps, "Sewer_convert")
 
 # Filter Septic_BMPs to only include those available in the data and update the main variable
 Septic_BMPs <- Septic_BMPs[Septic_BMPs %in% available_septic_bmps]
@@ -5436,6 +5549,14 @@ if(length(Septic_BMPs) > 0) {
   )
 }
 
+### ND: Define a filtered set that is empty unless Sewer_convert exists
+cat(
+  "\n\nset sewer_convert_in_model within septic_bmp := {e in septic_bmp: e = 'Sewer_convert'};",
+  file = paste(OutPath, "STmodel_seasonal.mod", sep = ""),
+  sep = "\n", 
+  append = T
+)
+
 cat(
   "\n\nset ripbuf_bmp :=",
   file = paste(OutPath, "STmodel_seasonal.mod", sep = ""),
@@ -5458,6 +5579,8 @@ if(length(RiparianBuffer_BMPs) > 0) {
     append = T
   ) 
 }
+
+
 
 cat(
   "\n\nset loads_N :=
@@ -5906,10 +6029,11 @@ cat(
 ### Incremental Storage Load Equations -----
 
 # Function to create septic terms conditionally
+# ND added 
 create_septic_terms <- function() {
   if(length(Septic_BMPs) > 0) {
     return(paste0(
-      "(baseloads_N", "PLACEHOLDER_I", "[c,s,y,'point'] + ((baseloads_N", "PLACEHOLDER_I", "[c,s,y,'septic']/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,'Sewer_convert'] * septic_effic_N[c,'Sewer_convert'])) * (1 - (point_effic_N[c,'point'] * point_dec[c])) + \n",
+      "(baseloads_N", "PLACEHOLDER_I", "[c,s,y,'point'] + sum {e in sewer_convert_in_model} ((baseloads_N", "PLACEHOLDER_I", "[c,s,y,'septic']/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,'Sewer_convert'] * septic_effic_N[c,'Sewer_convert'])) * (1 - (point_effic_N[c,'point'] * point_dec[c])) + \n",
       "          (baseloads_N", "PLACEHOLDER_I", "[c,s,y,'septic'] - sum {e in septic_bmp} (baseloads_N", "PLACEHOLDER_I", "[c,s,y,'septic']/septic_bmp_implementationtotal[c, 'total_parcels']) * septic_frac[c,e] * septic_effic_N[c,e])"
     ))
   } else {
