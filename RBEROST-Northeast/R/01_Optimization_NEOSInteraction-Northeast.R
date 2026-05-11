@@ -108,12 +108,20 @@ xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
 job.xml.text <- NsubmitJob(
     xmlstring = xmls, user = "rneos", interface = "", id = 0
 )
-  
+
+## Job info - ND added
+print("jobnumber = ")
+print(job.xml.text@jobnumber)
+print("password = ")
+print(job.xml.text@password)
+
 ## Retrieve results
 resultfile <- NgetFinalResults(obj = job.xml.text, convert = TRUE)
 
 writeLines(
-  resultfile@ans, con = paste0(working_dir, NEOSresults,"NEOSresult_", paramname, ".txt")
+#  resultfile@ans, con = paste0(working_dir, NEOSresults,"NEOSresult_", paramname, ".txt")
+# Changed to format for PS program
+  resultfile@ans, con = paste0(NEOSresults,"NEOSresult_", paramname, ".txt")  
 )
 
 print("NEOS results have been saved to the output folder.")
