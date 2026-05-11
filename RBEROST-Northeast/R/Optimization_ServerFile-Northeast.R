@@ -3,6 +3,7 @@
 # PURPOSE: To allow users to run the postprocessor and eventually the preprocessor through Shiny
 # BY: Cathy Chamberlin, earlier versions by Kate Munson and Alyssa Le (ICF)
 # DATE: 9/22/2021
+# Edited by Naomi Detenbeck (EPA), 5/26
 ###########################################################################################
 
 # This file is NOT intended to be run by itself. It is sourced through 02_Optimization_Postprocessing_RunShiny.R along with Optimization_PostprocessingUserInterfaceFile.R to run the shiny app.
@@ -947,11 +948,13 @@ output$downloadsepticdat <- downloadHandler(
                   tryCatch(
                     any(is.na(ag_results_HUCmerge())),
                     error = function(x) {FALSE}
-                  ) |
-                  tryCatch(
-                    any(is.na(ripbuf_results_HUCmerge())),
-                    error = function(x) {FALSE}
-                  )
+                   )                    
+# ND Causing problems when there are no riparian buffer results so dropped
+#                  ) |
+#                  tryCatch(
+#                    any(is.na(ripbuf_results_HUCmerge())),
+#                    error = function(x) {FALSE}
+#                  )
               ),
               "Catchment information (from the State Cropland Streamcat files) is missing for some catchments. Please ensure all files are uploaded that were used in the Preprocessing step."
             )
