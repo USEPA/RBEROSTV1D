@@ -1,0 +1,64 @@
+Parameter,Set member (BMP or other),Tolerance to decreased values,Tolerance to increased values
+ag_frac_max,Conservation,sensitive,not applicable
+ag_frac_max,Contour_Farming,sensitive,not applicable
+ag_frac_max,Fert_20,sensitive,not applicable
+ag_frac_max,Filterstrip,highly sensitive,not applicable
+ag_frac_max,MIN_TILL,sensitive,not applicable
+ag_frac_max,Manure_Injection,not sensitive,not applicable
+ag_frac_max,Ponds,sensitive,not applicable
+ag_frac_max,Terrace_Only,not sensitive,not applicable
+ag_frac_max,Terrace_Waterway,not sensitive,not applicable
+ag_frac_max,Waterway_Only,not sensitive,not applicable
+ag_frac_min,Conservation,not applicable,not applicable
+ag_frac_min,Contour_Farming,not applicable,not applicable
+ag_frac_min,Fert_20,not applicable,not applicable
+ag_frac_min,Filterstrip,not applicable,not applicable
+ag_frac_min,MIN_TILL,not applicable,not applicable
+ag_frac_min,Manure_Injection,not applicable,not applicable
+ag_frac_min,Ponds,not applicable,not applicable
+ag_frac_min,Terrace_Only,not applicable,not applicable
+ag_frac_min,Terrace_Waterway,not applicable,not applicable
+ag_frac_min,Waterway_Only,not applicable,not applicable
+ripbuf_frac_max,Forested_Buffer,not sensitive,not applicable
+ripbuf_frac_max,Grassed_Buffer,not sensitive,not applicable
+ripbuf_frac_min,Forested_Buffer,not applicable,not applicable
+ripbuf_frac_min,Grassed_Buffer,not applicable,not applicable
+urban_design_depth,Biofiltration_w_Underdrain,not sensitive,not sensitive
+urban_design_depth,Bioretention_Basin,not sensitive,not sensitive
+urban_design_depth,Enhanced_Biofiltration_w_ISR,not sensitive,not sensitive
+urban_design_depth,Extended_Dry_Detention_Basin,not sensitive,not sensitive
+urban_design_depth,Grass_Swale_w_detention,not sensitive,not sensitive
+urban_design_depth,Gravel_Wetland,not sensitive,not sensitive
+urban_design_depth,Infiltration_Basin,not sensitive,not sensitive
+urban_design_depth,Infiltration_Chamber,not sensitive,not sensitive
+urban_design_depth,Infiltration_Trench,not sensitive,not sensitive
+urban_design_depth,Porous_Pavement_w_subsurface_infiltration,not sensitive,not sensitive
+urban_design_depth,Porous_Pavement_w_underdrain,not sensitive,not sensitive
+urban_design_depth,Sand_Filter_w_underdrain,not sensitive,not sensitive
+urban_design_depth,Wet_Pond,not sensitive,not sensitive
+urban_frac_max,Biofiltration_w_Underdrain,not sensitive,not applicable
+urban_frac_max,Bioretention_Basin,not sensitive,not applicable
+urban_frac_max,Enhanced_Biofiltration_w_ISR,not sensitive,not applicable
+urban_frac_max,Extended_Dry_Detention_Basin,not sensitive,not applicable
+urban_frac_max,Grass_Swale_w_detention,not sensitive,not applicable
+urban_frac_max,Gravel_Wetland,not sensitive,not applicable
+urban_frac_max,Infiltration_Basin,not sensitive,not applicable
+urban_frac_max,Infiltration_Chamber,not sensitive,not applicable
+urban_frac_max,Infiltration_Trench,not sensitive,not applicable
+urban_frac_max,Porous_Pavement_w_subsurface_infiltration,not sensitive,not applicable
+urban_frac_max,Porous_Pavement_w_underdrain,not sensitive,not applicable
+urban_frac_max,Sand_Filter_w_underdrain,not sensitive,not applicable
+urban_frac_max,Wet_Pond,not sensitive,not applicable
+urban_frac_min,Biofiltration_w_Underdrain,not applicable,not applicable
+urban_frac_min,Bioretention_Basin,not applicable,not applicable
+urban_frac_min,Enhanced_Biofiltration_w_ISR,not applicable,not applicable
+urban_frac_min,Extended_Dry_Detention_Basin,not applicable,not applicable
+urban_frac_min,Grass_Swale_w_detention,not applicable,not applicable
+urban_frac_min,Gravel_Wetland,not applicable,not applicable
+urban_frac_min,Infiltration_Basin,not applicable,not applicable
+urban_frac_min,Infiltration_Chamber,not applicable,not applicable
+urban_frac_min,Infiltration_Trench,not applicable,not applicable
+urban_frac_min,Porous_Pavement_w_subsurface_infiltration,not applicable,not applicable
+urban_frac_min,Porous_Pavement_w_underdrain,not applicable,not applicable
+urban_frac_min,Sand_Filter_w_underdrain,not applicable,not applicable
+urban_frac_min,Wet_Pond,not applicable,not applicable

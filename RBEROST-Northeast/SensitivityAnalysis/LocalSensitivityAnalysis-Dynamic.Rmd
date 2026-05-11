@@ -1,0 +1,2095 @@
+---
+title: "Local Sensitivity Analysis"
+author: "Cathy Chamberlin, Sam Ennett"
+date: "11/04/2025"
+output: html_document
+---
+
+## Setup
+```{r}
+if (!require(pacman)) install.packages("pacman")
+pacman::p_load(
+    data.table, tidyverse, foreach, rneos, doParallel, RColorBrewer, shiny, magrittr, dplyr, purrr, stringr, ggplot2, readr, tzdb
+)
+theme_set(theme_classic())
+registerDoParallel()
+```
+
+## Define functions
+```{r}
+my_savematch <- function(x, set, include = TRUE) {
+  if(include == TRUE) {
+    tmp <- x[which(x %in% set)]
+  } else if(include == FALSE) {
+    tmp <- x[which(!(x %in% set))]
+  }
+  
+  return(tmp)
+}
+
+options(RCurlOptions = list(ssl.verifypeer = FALSE))
+
+my_NgetSolverTemplate <- function (
+  category, solvername, inputMethod, nc = CreateNeosComm()
+) {
+  if (!(class(nc) == "NeosComm")) {
+    stop("\nObject provided for 'nc' must be of class 'NeosComm'.\n")
+  }
+  
+  call <- match.call()
+  
+  ans <- xml.rpc(
+    url = nc@url, 
+    method = "getSolverTemplate", 
+    .args = list(
+      category = category, solvername = solvername, inputMethod = inputMethod
+    ), 
+    .convert = TRUE, 
+    .opts = nc@curlopts, 
+    .curl = nc@curlhandle
+  )
+  
+  email.xmlcode <- "\n\n<email><![CDATA[...Insert Value Here...]]></email>"
+  
+  ans_rev <- if(
+    grepl("email", ans)
+  ) {
+    ans
+  } else {
+    paste0(
+      substr(ans, 1, nchar(ans)-13), 
+      email.xmlcode, 
+      substr(ans, (nchar(ans)-13), nchar(ans))
+    )
+  }
+  
+  xml <- xmlRoot(xmlTreeParse(ans_rev, asText = TRUE))
+  
+  res <- new("NeosXml", xml = xml, method = "getSolverTemplate",
+             call = call, nc = nc)
+  
+  return(res)
+}
+
+read_csvs_using_baseR <- function(path) {
+  tryCatch(
+    # when reading semicolon separated files, having a comma separator causes `read.csv` to error. Using read.csv2 causes no error.
+    expr = {
+      dt <- data.table::fread(
+        file = path, 
+        colClasses = "character",
+        header = FALSE,
+        blank.lines.skip = FALSE,
+        sep = "\n"
+      )
+      return(dt)
+    },
+    error = function(e) {stop(safeError(error = e))} # return a safeError if a parsing error occurs
+  )
+}
+```
+
+## Set Filepath locations
+### AMPL scripts
+The AMPL scripts folder will be the location where the AMPL model files for each scenario will be written. 
+You will also need to paste the AMPL files for the RBEROST model you wish to analyze the sensitivity of into this folder. These files will come from the pre-processing code outputs folder.
+
+### NEOS results
+This folder will be where the results from NEOS are saved. This analysis will generate a large number of files, so it is recommended to have a dedicated folder for these results.
+
+### Figure outputs
+This folder will be where the figures generated from the sensitivity analysis are saved.
+
+```{r set filepaths}
+AMPLscriptsfolder <- "./RBEROST-Northeast/SensitivityAnalysis/AMPLscripts/Pequonnock River/"
+NEOSresults <- "./RBEROST-Northeast/SensitivityAnalysis/NEOSResults/Pequonnock River/"
+figureoutputs <- "./RBEROST-Northeast/SensitivityAnalysis/Images/Pequonnock River/"
+```
+
+## Load AMPL Model
+```{r}
+AMPLmod <- read_csvs_using_baseR(
+  paste0(AMPLscriptsfolder, "STmodel_seasonal.mod")
+) %>% rename(X = 1)
+```
+
+
+## List all parameters to work with
+This chunk of code creates a table with all the parameters used in the model, and the sets that they are iterated over. 
+Sets of comids are omitted, as we are going to assume changes to parameters occur uniformly across the watershed. 
+
+```{r}
+## list the sets that we are using for the sensitivity analysis
+## Sets of comids are omitted. There are thousands of them, so we will make the assumption that changes to parameters are uniform across the watershed. 
+set_lines <- AMPLmod[which(sapply(AMPLmod, grepl, pattern = "set"))]
+sets <- unlist(
+  lapply(
+    lapply(
+      lapply(
+        str_extract_all(set_lines, pattern = "(?<=set ).+?(?= :=)")[[1]], 
+        str_split_fixed, 
+        pattern = "within", 
+        n = 2
+      ), 
+      "[[", 
+      1
+    ), 
+    gsub, 
+    pattern = " ", 
+    replacement = ""
+  )
+)
+
+sets_toiterateover <- sets[which(!grepl("comid", sets))]
+sets_nottoiterateover <- sets[which(grepl("comid", sets))]
+## get members of the sets
+set_definition_lines <- AMPLmod[
+  which(sapply(AMPLmod, grepl, pattern = "set")) + 1
+]
+
+set_definitions <- lapply(set_definition_lines, str_extract_all, pattern = "(?<=\\{).+?(?=\\})")
+set_members_toiterateover <- set_definitions$X[which(sets %in% sets_toiterateover)]
+
+## list the parameters
+## We will not do sensitivity analysis on acftoft3, pcp or agBMP_minarea, because these are not variable and there is little to no uncertainty in the numbers. We will not do uncertainty analysis on ps_coef, urban_coef, ag_coef or ripbuf_coef, because these are created from other parameters, and we will already be doing uncertainty analysis on those other parameters.
+params <- AMPLmod[which(sapply(AMPLmod, grepl, pattern = "param"))] %>%
+  mutate(
+    param_name = str_split_fixed(X, pattern = " ", n = 3)[,2],
+    param_sets = str_extract_all(X, pattern = "(?<=\\{).+?(?=\\})")
+  ) %>%
+  filter(
+    !param_name %in% c(
+      "acfttoft3", 
+      "pcp", 
+      "agBMP_minarea;", 
+      "ps_coef", 
+      "urban_coef",
+      "ag_coef", 
+      "ripbuf_coef"
+    )
+  )
+
+## create a table of parameters and the sets to iterate over that we need to test for sensitivity
+params_totest <- foreach(i = 1:nrow(params), .combine = "rbind") %do% {
+  
+  param <- params$param_name[i]
+  
+  if(length(params$param_sets[i][[1]]) > 0) {
+    if(grepl(x = params$param_sets[i][[1]], pattern = "comid")) {
+      if(grepl(x = params$param_sets[i][[1]], pattern = ",")) {
+        
+        param_sets <- unlist(
+          lapply(
+            unlist(
+              lapply(
+                lapply(
+                  str_split(unlist(params$param_sets[i]), pattern = ","), 
+                  gsub, 
+                  pattern ="[a-z] in ", 
+                  replacement = ""
+                )[[1]], 
+                gsub, 
+                pattern = " ", 
+                replacement = ""
+              )
+            ), 
+            my_savematch, 
+            set = sets_toiterateover
+          )
+        )
+        
+        param_comidsets <- unlist(
+          lapply(
+            unlist(
+              lapply(
+                lapply(
+                  str_split(unlist(params$param_sets[i]), pattern = ","), 
+                  gsub, 
+                  pattern ="[a-z] in ", 
+                  replacement = ""
+                )[[1]], 
+                gsub, 
+                pattern = " ", 
+                replacement = ""
+              )
+            ), 
+            my_savematch, 
+            set = sets_nottoiterateover
+          )
+        )
+        
+        # Fix for seasonal model: map comid_N1 to comid_all_N and comid_P1 to comid_all_P
+        if(length(param_comidsets) > 0) {
+          param_comidsets <- gsub("comid_N1", "comid_all_N", param_comidsets)
+          param_comidsets <- gsub("comid_P1", "comid_all_P", param_comidsets)
+        }
+      } else {
+        param_sets <- NA_character_
+        
+        param_comidsets <- unlist(
+          lapply(
+            unlist(
+              lapply(
+                lapply(
+                  str_split(unlist(params$param_sets[i]), pattern = ","), 
+                  gsub, 
+                  pattern ="[a-z] in ", 
+                  replacement = ""
+                )[[1]], 
+                gsub, 
+                pattern = " ", 
+                replacement = ""
+              )
+            ), 
+            my_savematch, 
+            set = sets_nottoiterateover
+          )
+        )
+        
+        # Fix for seasonal model: map comid_N1 to comid_all_N and comid_P1 to comid_all_P
+        if(length(param_comidsets) > 0) {
+          param_comidsets <- gsub("comid_N1", "comid_all_N", param_comidsets)
+          param_comidsets <- gsub("comid_P1", "comid_all_P", param_comidsets)
+        }
+      }
+    } else {
+      param_sets <- unlist(
+        lapply(
+          unlist(
+            lapply(
+              lapply(
+                str_split(unlist(params$param_sets[i]), pattern = ","), 
+                gsub, 
+                pattern ="[a-z] in ", 
+                replacement = ""
+              )[[1]], 
+              gsub, 
+              pattern = " ", 
+              replacement = ""
+            )
+          ), 
+          my_savematch, 
+          set = sets_toiterateover
+        )
+      )
+      
+      param_comidsets <- NA_character_
+    }
+  } else {
+    param_sets <- NA_character_
+    param_comidsets <- NA_character_
+  }
+  
+  
+  if(length(param_sets) > 0 && !any(is.na(param_sets))) {
+    params_totest_tmp <- foreach(j = 1:length(param_sets), .combine = "rbind")  %do% {
+      
+      param_set <- param_sets[j]
+      
+      param_othersets <- if(length(param_sets) > 1) {
+        param_sets[-j]
+      } else {NA_character_}
+      
+      param_set_members_unformatted <- set_members_toiterateover[
+        which(sets_toiterateover == param_set)
+      ][[1]]
+      
+      param_set_members_extracted <- str_extract_all(
+        param_set_members_unformatted, pattern = "(?<=\\').+?(?=\\')"
+      )
+      
+      # Check if any matches were found
+      if(length(param_set_members_extracted) > 0 && length(param_set_members_extracted[[1]]) > 0) {
+        param_set_members <- param_set_members_extracted[[1]]
+        
+        param_set_members_dat <- param_set_members[
+          which(param_set_members != ", ")
+        ]
+        
+        data.frame(
+          param = rep(param, length(param_set_members_dat)),
+          sets = rep(param_set, length(param_set_members_dat)),
+          member = param_set_members_dat,
+          comidsets = rep(if(length(param_comidsets) > 0 && !any(is.na(param_comidsets))) paste(param_comidsets, collapse = ",") else NA_character_, length(param_set_members_dat)),
+          othersets = rep(if(length(param_othersets) > 0 && !any(is.na(param_othersets))) paste(param_othersets, collapse = ",") else NA_character_, length(param_set_members_dat))
+        )
+      } else {
+        # Return NULL for this iteration if no matches found
+        NULL
+      }
+    }
+  } else if (length(param_comidsets) > 0 && !any(is.na(param_comidsets))){
+    
+    params_totest_tmp <- data.frame(
+      param = param,
+      sets = NA_character_,
+      member = NA_character_,
+      comidsets = if(length(param_comidsets) > 0 && !any(is.na(param_comidsets))) paste(param_comidsets, collapse = ",") else NA_character_,
+      othersets = NA_character_
+    )
+    
+  } else {
+    params_totest_tmp <- data.frame(
+      param = param,
+      sets = NA_character_,
+      member = NA_character_,
+      comidsets = NA_character_,
+      othersets = NA_character_
+    )
+  }
+  params_totest_tmp
+}
+params_totest_dat <- params_totest %>% filter(member != "," | is.na(member))
+```
+
+## System Status Check and Cleanup
+
+```{r system status check}
+# Function to validate result file (moved here for early availability)
+validate_result_file <- function(filepath, required_patterns = c("cost =", "solve_result")) {
+  if (!file.exists(filepath)) {
+    return(FALSE)
+  }
+  
+  tryCatch({
+    content <- readLines(filepath, warn = FALSE)
+    content_text <- paste(content, collapse = "\n")
+    
+    # Check for required patterns
+    for (pattern in required_patterns) {
+      if (!grepl(pattern, content_text)) {
+        return(FALSE)
+      }
+    }
+    
+    # Check file is not empty or too small
+    if (length(content) < 5) {
+      return(FALSE)
+    }
+    
+    # Check for infeasible solve_result
+    solve_result_match <- regmatches(content_text, regexpr("solve_result\\s*=\\s*\\w+", content_text))
+    if (length(solve_result_match) > 0) {
+      solve_result_value <- gsub(".*=\\s*", "", solve_result_match)
+      if (grepl("infeasible", solve_result_value, ignore.case = TRUE)) {
+        return(FALSE)  # Mark as invalid if infeasible
+      }
+    }
+    
+    return(TRUE)
+  }, error = function(e) {
+    return(FALSE)
+  })
+}
+
+# Check if necessary directories exist
+if (!dir.exists(AMPLscriptsfolder)) {
+  dir.create(AMPLscriptsfolder, recursive = TRUE)
+  cat("Created AMPL scripts directory:", AMPLscriptsfolder, "\n")
+}
+
+if (!dir.exists(NEOSresults)) {
+  dir.create(NEOSresults, recursive = TRUE)
+  cat("Created NEOS results directory:", NEOSresults, "\n")
+}
+
+# Check existing result files
+existing_files <- list.files(NEOSresults, pattern = "NEOSresult_.*\\.txt", full.names = TRUE)
+
+if (length(existing_files) > 0) {
+  cat("Found", length(existing_files), "existing result files.\n")
+  
+  # Validate existing files
+  valid_files <- sapply(existing_files, function(f) {
+    if (grepl("_reference", f)) {
+      validate_result_file(f, c("cost =", "solve_result"))
+    } else {
+      validate_result_file(f, c("cost =", "solve_result", "frac ="))
+    }
+  })
+  
+  invalid_files <- existing_files[!valid_files]
+  
+  if (length(invalid_files) > 0) {
+    cat("Found", length(invalid_files), "invalid/corrupted result files (missing required fields):\n")
+    for (f in invalid_files) {
+      cat(" -", basename(f), "\n")
+    }
+    
+    # Option to clean up corrupted files (only those missing required fields)
+    cleanup_response <- readline(prompt = "Remove files with missing required fields? (y/n): ")
+    if (tolower(cleanup_response) == "y") {
+      file.remove(invalid_files)
+      cat("Removed", length(invalid_files), "corrupted files.\n")
+    }
+  } else {
+    cat("All existing result files have required fields.\n")
+  }
+  
+  # Report on infeasible solutions separately (for info only)
+  infeasible_count <- 0
+  for (f in existing_files[valid_files]) {
+    content <- paste(readLines(f, warn = FALSE), collapse = "\n")
+    if (grepl("solve_result\\s*=\\s*infeasible", content, ignore.case = TRUE)) {
+      infeasible_count <- infeasible_count + 1
+    }
+  }
+  if (infeasible_count > 0) {
+    cat("Note:", infeasible_count, "result files contain infeasible solutions (saved for troubleshooting).\n")
+  }
+} else {
+  cat("No existing result files found. Starting fresh.\n")
+}
+
+# Check NEOS connectivity
+cat("Testing NEOS connectivity...\n")
+tryCatch({
+  test_template <- my_NgetSolverTemplate(
+    category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+  )
+  cat("NEOS connection successful.\n")
+}, error = function(e) {
+  cat("NEOS connection failed:", e$message, "\n")
+  cat("Please check internet connection and NEOS server status.\n")
+})
+
+cat("System status check complete.\n\n")
+```
+
+
+## Write AMPL reference script
+
+```{r write reference script}
+# -------------Develop command file-------------
+
+cat(
+  "#WMOST Optimization Screening Tool AMPL command file
+solve;
+option display_precision 10;
+display solve_result_num, solve_result;
+display cost.result;
+display cost;
+
+option display_1col 10000000000;
+option display_width 100000000000;
+option omit_zero_rows 1;
+option omit_zero_cols 1;
+display seasons;
+display years;
+display sum {c in comid_all} (ps_coef[c] * point_dec[c]);
+display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);
+display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);
+display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);",
+file = paste(AMPLscriptsfolder, "STcommand_reference.amp", sep=""),
+sep = "\n"
+)
+```
+
+```{r solve reference model}
+
+# Function to submit NEOS job with retry logic
+submit_neos_job_with_retry <- function(argslist, tmp, max_retries = 3, base_delay = 5) {
+  
+  for (attempt in 1:max_retries) {
+    tryCatch({
+      cat("Attempt", attempt, "of", max_retries, "\n")
+      
+      ## create XML string
+      xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
+      
+      ## Submit job
+      job.xml.text <- NsubmitJob(
+        xmlstring = xmls, user = "rneos", interface = "", id = 0
+      )
+      
+      ## Retrieve results
+      resultfile <- NgetFinalResults(obj = job.xml.text, convert = TRUE)
+      
+      # Validate result content - only check if we got a response
+      if (is.null(resultfile@ans) || length(resultfile@ans) == 0) {
+        stop("Empty result returned from NEOS")
+      }
+      
+      # Log the solve_result for informational purposes, but don't reject the result
+      result_text <- paste(resultfile@ans, collapse = "\n")
+      solve_result_match <- regmatches(result_text, regexpr("solve_result\\s*=\\s*\\w+", result_text))
+      if (length(solve_result_match) > 0) {
+        solve_result_value <- gsub(".*=\\s*", "", solve_result_match)
+        if (grepl("infeasible", solve_result_value, ignore.case = TRUE)) {
+          cat("Note: NEOS returned infeasible solution. Saving result for troubleshooting.\n")
+        }
+      }
+      
+      cat("Job completed on attempt", attempt, "\n")
+      return(resultfile)
+      
+    }, error = function(e) {
+      cat("Attempt", attempt, "failed:", e$message, "\n")
+      
+      if (attempt < max_retries) {
+        delay <- base_delay * (2 ^ (attempt - 1)) + runif(1, 0, 2)  # Exponential backoff with jitter
+        cat("Waiting", round(delay, 1), "seconds before retry...\n")
+        Sys.sleep(delay)
+      } else {
+        stop("All retry attempts failed. Last error: ", e$message)
+      }
+    })
+  }
+}
+
+# Function to validate result file
+validate_result_file <- function(filepath, required_patterns = c("cost =", "solve_result")) {
+  if (!file.exists(filepath)) {
+    return(FALSE)
+  }
+  
+  tryCatch({
+    content <- readLines(filepath, warn = FALSE)
+    content_text <- paste(content, collapse = "\n")
+    
+    # Check for required patterns
+    for (pattern in required_patterns) {
+      if (!grepl(pattern, content_text)) {
+        return(FALSE)
+      }
+    }
+    
+    # Check file is not empty or too small
+    if (length(content) < 5) {
+      return(FALSE)
+    }
+    
+    # Do NOT reject files with infeasible solve_result - we want to keep them for troubleshooting
+    # Just validate that the file has the expected structure
+    
+    return(TRUE)
+  }, error = function(e) {
+    return(FALSE)
+  })
+}
+
+tmp <-my_NgetSolverTemplate(
+  category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+)
+## setting path to model and data files
+modf <- paste0(AMPLscriptsfolder, "STmodel_seasonal.mod")
+datf <- paste0(AMPLscriptsfolder, "STdata_seasonal.dat")
+comf <- paste0(AMPLscriptsfolder, "STcommand_reference.amp")
+
+## enter email & comments
+email <- "56407@icf.com"
+
+comments <- paste(
+  "Reference File for Local sensivity analysis. All BMPs included and no user limits. Default loading targets."
+)
+
+## import file contents
+modc <- paste(paste(readLines(modf), collapse = "\n"), "\n")
+datc <- paste(paste(readLines(datf), collapse = "\n"), "\n")
+comc <- paste(paste(readLines(comf), collapse = "\n"), "\n")
+
+## create list object
+argslist <- list(
+  model = modc, data = datc, commands = comc, comments = comments, email = email
+)
+
+# Submit reference job with retry logic
+reference_filepath <- paste0(NEOSresults, "NEOSresult_reference.txt")
+
+# Check if valid reference file already exists
+if (validate_result_file(reference_filepath)) {
+  cat("Valid reference result file already exists. Skipping submission.\n")
+} else {
+  cat("Submitting reference model to NEOS...\n")
+  resultfile <- submit_neos_job_with_retry(argslist, tmp)
+  write.table(
+    resultfile@ans, file = reference_filepath
+  )
+  
+  # Validate the written file
+  if (validate_result_file(reference_filepath)) {
+    cat("Reference model completed and file saved.\n")
+    # Check if solution was feasible
+    content <- paste(readLines(reference_filepath, warn = FALSE), collapse = "\n")
+    if (grepl("solve_result\\s*=\\s*infeasible", content, ignore.case = TRUE)) {
+      cat("WARNING: Reference model returned infeasible solution. Check model constraints.\n")
+    } else {
+      cat("Reference model solved successfully.\n")
+    }
+  } else {
+    stop("Reference model result file validation failed (missing required fields).")
+  }
+}
+```
+
+## Write AMPL sensitivity AMPL command scripts
+
+```{r write sensitivity AMPL scripts}
+foreach(i = 1:nrow(params_totest_dat), .verbose = FALSE) %do% {
+  
+  tryCatch({
+    param <- params_totest_dat[i, ]$param
+    sets <- params_totest_dat[i, ]$sets
+    member <- params_totest_dat[i, ]$member
+    comidset <- params_totest_dat[i, ]$comidsets
+    othersets <- params_totest_dat[i, ]$othersets
+    
+    # Debug print
+    cat("Processing parameter:", param, "| sets:", sets, "| member:", member, "\n")
+    
+    ordersets <- params$param_sets[which(params$param_name == param)][[1]]
+  sets_pos <- if(is.na(sets)) NA else str_locate(string = ordersets, pattern = sets)[1]
+  comid_pos <- if(is.na(comidset)) NA else str_locate(string = ordersets, pattern = comidset)[1]
+  
+  # Fix: When othersets contains multiple sets, find position of the first one
+  if(!is.na(othersets) && grepl(",", othersets)) {
+    first_otherset <- strsplit(othersets, ",")[[1]][1]
+    othersets_pos <- str_locate(string = ordersets, pattern = first_otherset)[1]
+  } else {
+    othersets_pos <- if(is.na(othersets)) NA else str_locate(string = ordersets, pattern = othersets)[1]
+  }
+  
+  if(is.na(sets) && is.na(comidset) && is.na(othersets)) {
+    sens_par <- param
+  } else if(!is.na(sets) && is.na(comidset) && is.na(othersets)) {
+    sens_par <- paste0(param, "['", member, "']")
+  } else if(is.na(sets) && !is.na(comidset) && is.na(othersets)) {
+    sens_par <- paste0(param, "[c]")
+  } else if(!is.na(sets) && !is.na(comidset) && is.na(othersets)) {
+    if(!is.na(sets_pos) && !is.na(comid_pos) && sets_pos < comid_pos) {
+      sens_par <- paste0(param, "['", member, "', c]")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && sets_pos > comid_pos) {
+      sens_par <- paste0(param, "[c, '", member, "']")
+    } else {
+      sens_par <- paste0(param, "['", member, "', c]")  # default case
+    }
+  } else if(!is.na(sets) && is.na(comidset) && !is.na(othersets)) {
+    if(!is.na(sets_pos) && !is.na(othersets_pos) && sets_pos < othersets_pos) {
+      sens_par <- paste0(param, "['", member, "', x]")
+    } else if(!is.na(sets_pos) && !is.na(othersets_pos) && sets_pos > othersets_pos) {
+      sens_par <- paste0(param, "[x, '", member, "']")
+    } else {
+      sens_par <- paste0(param, "['", member, "', x]")  # default case
+    }
+  } else if(!is.na(sets) && !is.na(comidset) && !is.na(othersets)) {
+    if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+       sets_pos < comid_pos && sets_pos < othersets_pos && comid_pos < othersets_pos) {
+      sens_par <- paste0(param, "['", member, "', c, x]")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+              sets_pos < comid_pos && sets_pos < othersets_pos && comid_pos > othersets_pos) {
+      sens_par <- paste0(param, "['", member, "', x, c]")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+              sets_pos > comid_pos && sets_pos < othersets_pos && comid_pos < othersets_pos) {
+      sens_par <- paste0(param, "[c, '", member, "', x]")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+              sets_pos > comid_pos && sets_pos > othersets_pos && comid_pos < othersets_pos) {
+      sens_par <- paste0(param, "[c, x, '", member, "']")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+              sets_pos < comid_pos && sets_pos > othersets_pos && comid_pos > othersets_pos) {
+      sens_par <- paste0(param, "[x, '", member, "', c]")
+    } else if(!is.na(sets_pos) && !is.na(comid_pos) && !is.na(othersets_pos) && 
+              sets_pos > comid_pos && sets_pos > othersets_pos && comid_pos > othersets_pos) {
+      sens_par <- paste0(param, "[x, c, '", member, "']")
+    } else {
+      # Default case: member at the end (most common AMPL convention)
+      sens_par <- paste0(param, "[c, x, '", member, "']")
+    }
+  } else {
+    sens_par <- param  # fallback default
+  }
+  
+  
+  filename <- paste0("STcommand_sens-", substr(param, 1, 20), "-", substr(ifelse(is.na(member), "NA", member), 1, 25), ".amp")
+  
+  nchar(filename)
+  
+  # Parse othersets if it contains multiple comma-separated sets
+  othersets_split <- if(!is.na(othersets)) {
+    strsplit(othersets, ",")[[1]]
+  } else {
+    NA
+  }
+  
+  # Generate loop variable names and index strings for multiple othersets
+  if(!is.na(othersets) && length(othersets_split) > 1) {
+    loop_vars <- c("x1", "x2", "x3", "x4")[1:length(othersets_split)]  # x1, x2, x3... for each set
+    index_string <- paste(loop_vars, collapse = ", ")  # "x1, x2" for indexing
+    
+    # Build nested for loops opening
+    nested_for_open <- paste(sapply(1:length(othersets_split), function(i) {
+      paste0("for {", loop_vars[i], " in ", othersets_split[i], "} { ")
+    }), collapse = "")
+    
+    # Build nested for loops closing
+    nested_for_close <- paste(rep("}; ", length(othersets_split)), collapse = "")
+    
+    # Replace 'x' in sens_par with the expanded index string
+    sens_par <- gsub("\\bx\\b", index_string, sens_par)
+  } else {
+    loop_vars <- "x"
+    index_string <- "x"
+    nested_for_open <- NULL
+    nested_for_close <- NULL
+  }
+  
+  cat(
+    "
+  #WMOST Optimization Screening Tool AMPL sensitivity analysis command file
+set Sens;
+let Sens := {0.01, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.96, 0.97, 0.98, 0.99, 0.995, 0.996, 0.997, 0.998, 0.999, 1, 1.001, 1.002, 1.003, 1.004, 1.005, 1.01, 1.02, 1.03, 1.04, 1.05, 1.1, 1.2, 1.3, 1.4, 1.5, 2, 3, 4, 5, 10, 20, 30, 40, 50, 100};
+",
+if(is.na(comidset) && is.na(othersets)) {
+  paste0("param SENSVALS {Sens};")
+} else if(!is.na(comidset) && is.na(othersets)) {
+  paste0("param SENSVALS {Sens, ", comidset, "};")
+} else if(is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0("param SENSVALS {Sens, ", paste(othersets_split, collapse = ", "), "};")
+  } else {
+    paste0("param SENSVALS {Sens, ", othersets, "};")
+  }
+} else if(!is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0("param SENSVALS {Sens, ", comidset, ", ", paste(othersets_split, collapse = ", "), "};")
+  } else {
+    paste0("param SENSVALS {Sens, ", comidset, ", ", othersets, "};")
+  }
+}, 
+
+"
+param frac;
+for {s in Sens} {
+let frac := s;
+",
+if(is.na(comidset) && is.na(othersets)) {
+  paste0("let SENSVALS[s] := frac * ", sens_par, ";")
+} else if(!is.na(comidset) && is.na(othersets)) {
+  paste0("for {c in ", comidset, "} { \n let SENSVALS[s, c] := frac * ", sens_par, "; \n };")
+} else if(is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0(nested_for_open, "\n let SENSVALS[s, ", index_string, "] := frac * ", sens_par, "; \n ", nested_for_close)
+  } else {
+    paste0("for {x in ", othersets, "} { \n let SENSVALS[s, x] := frac * ", sens_par, "; \n };")
+  }
+} else if(!is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0(nested_for_open, "for {c in ", comidset, "} {\n let SENSVALS[s, c, ", index_string, "] := frac * ", sens_par, "; \n }; \n ", nested_for_close)
+  } else {
+    paste0("for {x in ", othersets, "} { for {c in ", comidset, "} {\n let SENSVALS[s, c, x] := frac * ", sens_par, "; \n }; \n };")
+  }
+}, 
+"}
+display SENSVALS;
+for {s in Sens} {
+let frac := s;
+",
+if(is.na(comidset) && is.na(othersets)) {
+  paste0("let ", sens_par, " := SENSVALS[s];")
+} else if(!is.na(comidset) && is.na(othersets)) {
+  paste0("for {c in ", comidset, "} { \n let ", sens_par, " := SENSVALS[s, c]; \n };")
+} else if(is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0(nested_for_open, "\n let ", sens_par, " := SENSVALS[s, ", index_string, "]; \n ", nested_for_close)
+  } else {
+    paste0("for {x in ", othersets, "} { \n let ", sens_par, " := SENSVALS[s, x]; \n };")
+  }
+} else if(!is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0(nested_for_open, "for {c in ", comidset, "} {\n let ", sens_par, " := SENSVALS[s, c, ", index_string, "]; \n }; \n ", nested_for_close)
+  } else {
+    paste0("for {x in ", othersets, "} { for {c in ", comidset, "} {\n let ", sens_par, " := SENSVALS[s, c, x]; \n }; \n };")
+  }
+},
+"
+
+solve;
+option display_precision 10;
+display frac;
+display solve_result;
+display cost;
+",
+if(is.na(comidset) && is.na(othersets)) {
+  paste0("display ", sens_par, ";")
+} else if(!is.na(comidset) && is.na(othersets)) {
+  paste0("display {c in ", comidset, "} ", sens_par, ";")
+} else if(is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0("display {", paste(sapply(1:length(othersets_split), function(i) {
+      paste0(loop_vars[i], " in ", othersets_split[i])
+    }), collapse = ", "), "} ", sens_par, ";")
+  } else {
+    paste0("display {x in ", othersets, "} ", sens_par, ";")
+  }
+} else if(!is.na(comidset) && !is.na(othersets)) {
+  if(length(othersets_split) > 1) {
+    paste0("display {c in ", comidset, ", ", paste(sapply(1:length(othersets_split), function(i) {
+      paste0(loop_vars[i], " in ", othersets_split[i])
+    }), collapse = ", "), "} ", sens_par, ";")
+  } else {
+    paste0("display {c in ", comidset, ", x in ", othersets, "} ", sens_par, ";")
+  }
+},
+"
+option display_1col 10000000000;
+option display_width 100000000000;
+option omit_zero_rows 1;
+option omit_zero_cols 1;
+display seasons;
+display years;
+display sum {c in comid_all} (ps_coef[c] * point_dec[c]);
+display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);
+display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);
+display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);",
+"}",
+"
+",
+file = paste0(AMPLscriptsfolder, filename),
+sep = "\n"
+  )
+  
+  }, error = function(e) {
+    cat("Error processing parameter", param, ":", e$message, "\n")
+    return(NULL)
+  })
+  
+}
+```
+
+## Send AMPL jobs to NEOS
+
+```{r send AMPL scripts to solver}
+# Function to submit individual sensitivity job with retry logic
+submit_sensitivity_job <- function(i, cmdfiles, modc, datc, tmp, email, NEOSresults, max_retries = 3) {
+  
+  paramname <- str_extract(
+    cmdfiles[i], pattern = "(?<=\\STcommand_sens-).+?(?=\\.amp)"
+  )
+  
+  result_filepath <- paste0(NEOSresults, "NEOSresult_", paramname, ".txt")
+  
+  # Check if valid result already exists
+  if (validate_result_file(result_filepath, c("cost =", "solve_result", "frac ="))) {
+    cat("Result for", paramname, "already exists. Skipping.\n")
+    return(TRUE)
+  }
+  
+  comments <- paste(
+    "sensitivity test of", 
+    paramname, 
+    " with all BMPs included and no user limits. Default loading targets."
+  )
+  
+  for (attempt in 1:max_retries) {
+    tryCatch({
+      cat("Processing", paramname, "- Attempt", attempt, "of", max_retries, "\n")
+      
+      ## import command file contents
+      comf <- cmdfiles[i]
+      comc <- paste(paste(readLines(comf), collapse = "\n"), "\n")
+      
+      ## create list object
+      argslist <- list(
+        model = modc, data = datc, commands = comc, comments = comments, email = email
+      )
+      
+      ## create XML string
+      xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
+      
+      ## Submit job
+      job.xml.text <- NsubmitJob(
+        xmlstring = xmls, user = "rneos", interface = "", id = 0
+      )
+      
+      ## Retrieve results
+      resultfile <- NgetFinalResults(obj = job.xml.text, convert = TRUE)
+      
+      # Validate result content - only check if we got a response
+      if (is.null(resultfile@ans) || length(resultfile@ans) == 0) {
+        stop("Empty result returned from NEOS")
+      }
+      
+      # Log the solve_result for informational purposes, but don't reject the result
+      result_text <- paste(resultfile@ans, collapse = "\n")
+      solve_result_match <- regmatches(result_text, regexpr("solve_result\\s*=\\s*\\w+", result_text))
+      if (length(solve_result_match) > 0) {
+        solve_result_value <- gsub(".*=\\s*", "", solve_result_match)
+        if (grepl("infeasible", solve_result_value, ignore.case = TRUE)) {
+          cat("Note:", paramname, "returned infeasible solution. Saving for troubleshooting.\n")
+        }
+      }
+      
+      # Write result file
+      write.table(resultfile@ans, file = result_filepath)
+      
+      # Validate the written file has required structure
+      if (validate_result_file(result_filepath, c("cost =", "solve_result", "frac ="))) {
+        cat("Successfully saved result for", paramname, "on attempt", attempt, "\n")
+        return(TRUE)
+      } else {
+        stop("Result file validation failed (missing required fields)")
+      }
+      
+    }, error = function(e) {
+      cat("Attempt", attempt, "failed for", paramname, ":", e$message, "\n")
+      
+      # Clean up potentially corrupted file (only if it's truly corrupted, not just infeasible)
+      if (file.exists(result_filepath)) {
+        if (!validate_result_file(result_filepath, c("cost =", "solve_result", "frac ="))) {
+          file.remove(result_filepath)
+          cat("Removed corrupted file for", paramname, "\n")
+        }
+      }
+      
+      if (attempt < max_retries) {
+        delay <- 5 * (2 ^ (attempt - 1)) + runif(1, 0, 3)  # Exponential backoff with jitter
+        cat("Waiting", round(delay, 1), "seconds before retry...\n")
+        Sys.sleep(delay)
+      } else {
+        cat("All attempts failed for", paramname, "\n")
+        return(FALSE)
+      }
+    })
+  }
+  return(FALSE)
+}
+
+# Function to check job completeness
+check_job_completeness <- function(cmdfiles, NEOSresults) {
+  
+  completed_files <- list.files(
+    path = NEOSresults, pattern = "NEOSresult_.*\\.txt", full.names = TRUE
+  )
+  completed_files <- completed_files[grep("_reference", completed_files, invert = TRUE)]
+  
+  check.completeness <- data.frame(cmdfile = cmdfiles) %>% 
+    mutate(
+      paramset = gsub(
+        ".amp", 
+        "", 
+        gsub(
+          paste0(AMPLscriptsfolder, "STcommand_sens-"),
+          "", 
+          cmdfile
+        )
+      ),
+      expected_result = paste0(NEOSresults, "NEOSresult_", paramset, ".txt")
+    ) %>%
+    mutate(
+      file_exists = file.exists(expected_result),
+      file_valid = sapply(expected_result, function(f) {
+        if (file.exists(f)) {
+          validate_result_file(f, c("cost =", "solve_result", "frac ="))
+        } else {
+          FALSE
+        }
+      })
+    )
+  
+  return(check.completeness)
+}
+
+cmdfiles <- list.files(
+  path = AMPLscriptsfolder, pattern = "STcommand_sens", full.names = TRUE
+) 
+
+tmp <-my_NgetSolverTemplate(
+  category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+)
+## setting path to model and data files
+modf <- paste0(AMPLscriptsfolder,  "STmodel_seasonal.mod")
+datf <- paste0(AMPLscriptsfolder, "STdata_seasonal.dat")
+
+## enter email & comments
+email <- "56407@icf.com"
+## import file contents
+modc <- paste(paste(readLines(modf), collapse = "\n"), "\n")
+datc <- paste(paste(readLines(datf), collapse = "\n"), "\n")
+
+# Main job submission loop with automatic retry
+max_overall_retries <- 3
+overall_attempt <- 1
+
+while (overall_attempt <= max_overall_retries) {
+  
+  cat("\n=== Overall attempt", overall_attempt, "of", max_overall_retries, "===\n")
+  
+  # Check current completeness status
+  completeness_check <- check_job_completeness(cmdfiles, NEOSresults)
+  
+  incomplete_jobs <- which(!completeness_check$file_valid)
+  
+  if (length(incomplete_jobs) == 0) {
+    cat("All jobs completed successfully!\n")
+    break
+  }
+  
+  cat("Found", length(incomplete_jobs), "incomplete jobs out of", length(cmdfiles), "total jobs.\n")
+  
+  # Process incomplete jobs
+  failed_jobs <- c()
+  
+  # Use parallel processing for efficiency, but limit concurrent jobs to avoid overwhelming NEOS
+  if (length(incomplete_jobs) > 10) {
+    # For large numbers of jobs, process in smaller batches
+    batch_size <- 5
+    batches <- split(incomplete_jobs, ceiling(seq_along(incomplete_jobs) / batch_size))
+    
+    for (batch in batches) {
+      cat("Processing batch of", length(batch), "jobs...\n")
+      
+      batch_results <- foreach(i = batch, .packages = c("tidyverse", "rneos"), .combine = "c") %dopar% {
+        options(RCurlOptions = list(ssl.verifypeer = FALSE))
+        submit_sensitivity_job(i, cmdfiles, modc, datc, tmp, email, NEOSresults)
+      }
+      
+      failed_in_batch <- batch[!batch_results]
+      failed_jobs <- c(failed_jobs, failed_in_batch)
+      
+      # Brief pause between batches
+      if (length(batches) > 1) {
+        Sys.sleep(10)
+      }
+    }
+    
+  } else {
+    # For smaller numbers, process in parallel
+    job_results <- foreach(i = incomplete_jobs, .packages = c("tidyverse", "rneos"), .combine = "c") %dopar% {
+      options(RCurlOptions = list(ssl.verifypeer = FALSE))
+      submit_sensitivity_job(i, cmdfiles, modc, datc, tmp, email, NEOSresults)
+    }
+    
+    failed_jobs <- incomplete_jobs[!job_results]
+  }
+  
+  if (length(failed_jobs) == 0) {
+    cat("All remaining jobs completed successfully!\n")
+    break
+  } else {
+    cat("Still have", length(failed_jobs), "failed jobs after attempt", overall_attempt, "\n")
+    
+    if (overall_attempt < max_overall_retries) {
+      wait_time <- 30 * overall_attempt
+      cat("Waiting", wait_time, "seconds before next overall retry...\n")
+      Sys.sleep(wait_time)
+    }
+  }
+  
+  overall_attempt <- overall_attempt + 1
+}
+
+# Final completeness check and summary
+final_check <- check_job_completeness(cmdfiles, NEOSresults)
+successful_jobs <- sum(final_check$file_valid)
+total_jobs <- nrow(final_check)
+
+cat("\n=== FINAL SUMMARY ===\n")
+cat("Successfully completed:", successful_jobs, "out of", total_jobs, "jobs\n")
+
+# Count infeasible solutions separately
+infeasible_jobs <- 0
+for (i in which(final_check$file_valid)) {
+  filepath <- final_check$expected_result[i]
+  if (file.exists(filepath)) {
+    content <- paste(readLines(filepath, warn = FALSE), collapse = "\n")
+    if (grepl("solve_result\\s*=\\s*infeasible", content, ignore.case = TRUE)) {
+      infeasible_jobs <- infeasible_jobs + 1
+    }
+  }
+}
+
+if (infeasible_jobs > 0) {
+  cat("Note:", infeasible_jobs, "jobs returned infeasible solutions (saved for troubleshooting).\n")
+}
+
+if (successful_jobs < total_jobs) {
+  failed_job_details <- final_check[!final_check$file_valid, ]
+  cat("Failed jobs (missing required fields):\n")
+  for (i in 1:nrow(failed_job_details)) {
+    cat(" -", failed_job_details$paramset[i], "\n")
+  }
+  
+  # Save failed job list for manual review
+  write.csv(failed_job_details, file = paste0(NEOSresults, "failed_jobs_log.csv"), row.names = FALSE)
+  cat("Failed job details saved to:", paste0(NEOSresults, "failed_jobs_log.csv"), "\n")
+} else {
+  cat("All jobs completed and saved successfully!\n")
+}
+```
+
+## Load Reference Data and AMPL model
+```{r load reference file}
+dat <- fread(
+  file = paste0(NEOSresults, "NEOSresult_reference.txt"),
+  fill = TRUE,
+  sep = "\t",
+  sep2 = "\n",
+  quote = ""
+) %>% 
+  rename(X = 1)
+dat <- as.data.frame(dat)
+
+```
+
+## Parse Reference File
+Creates data frames for the reference result ag, urban, riparian buffer, and septic bmps.
+```{r parse reference file}
+
+full.list.of.BMPs <- c(
+  unique(
+    (
+      params_totest_dat %>% 
+        filter(sets %in% c("urban_bmp", "ripbuf_bmp", "ag_bmp", "septic_bmp"))
+    )$member
+  ),  
+  "WWTP_upgrades"
+)
+
+ref.cost <- as.numeric(
+  gsub("cost = ", "", dat$X[which(grepl("cost =", dat$X))])
+)
+
+end.rows <- which(grepl(";", dat$X))
+BMPdescriptions_begin <- which(grepl("sum[{]c in comid_all[}]", dat$X)) 
+which_point <- grep("point", dat$X[BMPdescriptions_begin])
+which_ag <- grep("ag", dat$X[BMPdescriptions_begin])
+which_urban <- grep("urban", dat$X[BMPdescriptions_begin])
+which_ripbuf <- grep("ripbuf", dat$X[BMPdescriptions_begin])
+which_septic <- grep("septic", dat$X[BMPdescriptions_begin])
+BMP <- c()
+BMP[which_point] <- "point"
+BMP[which_ag] <- "ag"
+BMP[which_urban] <- "urban"
+BMP[which_ripbuf] <- "ripbuf"
+BMP[which_septic] <- "septic"
+
+BMP.end.rows <- which(grepl(";", dat$X))
+
+frac.summary <- data.frame(
+  frac = 1,
+  solve_result = 1,
+  cost = ref.cost
+) %>%
+  mutate(
+    cost = case_when(solve_result == 0 ~ NA_real_, solve_result == 1 ~ cost)
+  )
+
+BMPdescriptions_end <- foreach(
+  i = 1:length(BMPdescriptions_begin), .combine = "c"
+) %do% {
+  if(i %in% which_point) {tmp <- BMPdescriptions_begin[i]} else {
+    tmp <- BMP.end.rows[min(which(BMP.end.rows > BMPdescriptions_begin[i]))]
+  }
+  tmp
+}
+
+BMPspending_summary <- foreach(i = 1:length(BMPdescriptions_begin), .combine = "rbind") %do% {
+  tmp <- dat[BMPdescriptions_begin[i]:BMPdescriptions_end[i],1]
+  if(i %in% which_point) {
+    bee <- as.numeric(str_split_fixed(tmp, " = ", n = 2)[2])
+    tmp.dat <- data_frame(frac = ceiling(i / 4), BMP = "WWTP_upgrades", Total_Spent = bee)
+  } else if(length(tmp) > 2) {
+    tmp.clean <- str_split_fixed(parse_character(tmp[2:(length(tmp)-1)]), " ", n = 2)
+    BMP <- parse_character(tmp.clean[,1])
+    costs <- parse_number(tmp.clean[,2])
+    
+    tmp.dat <- data_frame(frac = ceiling(i / 4), BMP = BMP, Total_Spent = costs)
+  } else {tmp.dat <- NULL}
+  tmp.dat
+}
+
+BMPspending_summary_reference <- BMPspending_summary %>%
+  full_join(., BMPspending_summary %>% expand(frac, BMP = full.list.of.BMPs)) %>%
+  mutate(
+    Total_Spent = case_when(
+      is.na(Total_Spent) ~ 0, !is.na(Total_Spent) ~ Total_Spent
+    ),
+    BMP_Category = case_when(
+      BMP %in% c("WWTP_upgrades") ~ "Point Source BMPs",
+      BMP %in% c("Grassed_Buffer", "Forested_Buffer") ~ "Riparian Buffer BMPs",
+      BMP %in% c("Biofiltration_w_Underdrain", "Bioretention_Basin", "Enhanced_Biofiltration_w_ISR", "Extended_Dry_Detention_Basin", "Grass_Swale_w_detention", "Gravel_Wetland", "Infiltration_Basin", "Infiltration_Chamber", "Infiltration_Trench", "Porous_Pavement_w_subsurface_infiltration", "Porous_Pavement_w_underdrain", "Sand_Filter_w_underdrain", "Wet_Pond") ~ "Urban BMPs",
+      BMP %in% c("Conservation", "Contour_Farming", "Fert_20", "Filterstrip", "Manure_Injection", "MIN_TILL", "Ponds", "Terrace_Only", "Terrace_Waterway", "Waterway_Only") ~ "Agricultural BMPs",
+      BMP %in% c("class_1_upgrade", "class_2_upgrade", "class_3_upgrade", "class_4_upgrade", "class_5_upgrade", "class_6_upgrade", "class_7_upgrade", "class_8_upgrade", "Sewer_convert") ~ "Septic BMPs"
+    )
+  ) %>%
+  left_join(., frac.summary, by = "frac") %>%
+  filter(solve_result == 1)
+
+``` 
+
+## Load & Parse NEOS results
+
+```{r load & parse sens files}
+# Function to safely parse a single result file
+parse_single_result_file <- function(file_path, max_retries = 2) {
+  
+  for (attempt in 1:max_retries) {
+    tryCatch({
+      
+      param <- gsub(
+        x = gsub(
+          x = file_path,
+          pattern = paste0(NEOSresults, "NEOSresult_"),
+          replacement = ""
+        ),
+        pattern = ".txt",
+        replacement = ""
+      )
+      
+      # Validate file before processing
+      if (!validate_result_file(file_path, c("cost =", "solve_result", "frac ="))) {
+        stop("File validation failed")
+      }
+      
+      dat <- fread(file_path, fill = TRUE, skip = 2, sep = "\t", sep2 = "\n") %>%
+        rename(X = 1)
+      
+      if(ncol(dat) > 1) {
+        dat$X <- apply(X = dat[,1:ncol(dat)], MARGIN = 1, FUN = paste, collapse = " ")
+        dat <- dat %>% select(X)
+      }
+      
+      dat.split <- dat %>%
+        mutate(
+          new.group = case_when(
+            (
+              grepl(x = X, pattern = "frac = ") &
+                !grepl(x = X, pattern = "_frac") &
+                !grepl(x = X, pattern = "frac_")
+            ) ~ TRUE,
+            TRUE ~ FALSE
+          ),
+          group = cumsum(new.group)
+        ) %>%
+        filter(group > 0) %>%
+        group_split(group)
+      
+      if (length(dat.split) == 0) {
+        stop("No valid data groups found in file")
+      }
+      
+      dat.split.parsed <- data.frame()
+      
+      for(j in 1:length(dat.split)) {
+        tryCatch({
+          dat.tmp <- as.data.frame(dat.split[[j]])
+          
+          frac <- as.numeric(
+            str_extract(
+              string = dat.tmp[
+                which(
+                  sapply(dat.tmp, grepl, pattern = "frac =") &
+                    !sapply(dat.tmp, grepl, pattern = "agcost_frac =")
+                ),
+                1
+              ],
+              pattern = "(?i)(?<=frac =\\D)[[:digit:]]+\\.*[[:digit:]]*"
+            )
+          )
+          
+          if (is.na(frac)) {
+            warning(paste("Could not extract frac value for group", j, "in file", file_path))
+            next
+          }
+          
+          solve.result = gsub(
+            " ",
+            "",
+            gsub(
+              "solve_result = ",
+              "",
+              dat.tmp$X[which(grepl("solve_result =", dat.tmp$X))]
+            )
+          )
+          
+          ref.cost <- as.numeric(
+            gsub(
+              "cost = ",
+              "",
+              dat.tmp$X[which(grepl("cost =", dat.tmp$X))]
+            )
+          )
+          
+          # Skip if critical values are missing
+          if (length(solve.result) == 0 || is.na(ref.cost)) {
+            warning(paste("Missing critical values for group", j, "in file", file_path))
+            next
+          }
+          
+          end.rows <- which(sapply(dat.tmp, grepl, pattern = ";"))
+          
+          BMPdescriptions_begin <- which(
+            sapply(dat.tmp, grepl, pattern = "sum[{]c in comid_all[}]")
+          )
+          which_point <- grep("point", dat.tmp[BMPdescriptions_begin,1])
+          which_ag <- grep("ag", dat.tmp[BMPdescriptions_begin,1])
+          which_urban <- grep("urban", dat.tmp[BMPdescriptions_begin,1])
+          which_ripbuf <- grep("ripbuf", dat.tmp[BMPdescriptions_begin,1])
+          which_septic <- grep("septic", dat.tmp[BMPdescriptions_begin,1])
+          BMP <- c()
+          BMP[which_point] <- "point"
+          BMP[which_ag] <- "ag"
+          BMP[which_urban] <- "urban"
+          BMP[which_ripbuf] <- "ripbuf"
+          BMP[which_septic] <- "septic"
+          
+          BMP.end.rows <- which(sapply(dat.tmp$X, grepl, pattern = ";"))
+          
+          frac.summary <- data.frame(
+            frac = frac,
+            solve_result = solve.result,
+            cost = ref.cost
+          ) %>%
+            mutate(
+              cost = case_when(
+                solve_result == "infeasible" ~ NA_real_,
+                solve_result == "solved" ~ cost
+              )
+            )
+          
+          BMPdescriptions_end <- numeric(length(BMPdescriptions_begin))
+          for(k in 1:length(BMPdescriptions_begin)) {
+            if(k %in% which_point) {
+              BMPdescriptions_end[k] <- BMPdescriptions_begin[k]
+            } else {
+              BMPdescriptions_end[k] <- BMP.end.rows[min(which(BMP.end.rows > BMPdescriptions_begin[k]))]
+            }
+          }
+          
+          BMPspending_summary <- data.frame()
+          for(k in 1:length(BMPdescriptions_begin)) {
+            tmp <- dat.tmp[BMPdescriptions_begin[k]:BMPdescriptions_end[k],1]
+            
+            if(k %in% which_point) {
+              bee <- as.numeric(str_split_fixed(tmp, " = ", n = 2)[2])
+              if (!is.na(bee)) {
+                tmp.dat <- data_frame(
+                  frac = frac, BMP = "WWTP_upgrades", Total_Spent = bee
+                )
+              } else {
+                tmp.dat <- NULL
+              }
+            } else if(length(tmp) > 2) {
+              tmp.clean <- str_split_fixed(
+                parse_character(tmp[2:(length(tmp)-1)]), " ", n = 2
+              )
+              BMP <- parse_character(tmp.clean[,1])
+              costs <- parse_number(tmp.clean[,2])
+              
+              # Filter out any NA values
+              valid_indices <- !is.na(BMP) & !is.na(costs)
+              if (any(valid_indices)) {
+                tmp.dat <- data_frame(
+                  frac = frac, 
+                  BMP = BMP[valid_indices], 
+                  Total_Spent = costs[valid_indices]
+                )
+              } else {
+                tmp.dat <- NULL
+              }
+            } else {
+              tmp.dat <- NULL
+            }
+            
+            if(!is.null(tmp.dat)) {
+              BMPspending_summary <- rbind(BMPspending_summary, tmp.dat)
+            }
+          }
+          
+          if (nrow(BMPspending_summary) > 0) {
+            BMPspending_summary_full <- BMPspending_summary %>%
+              full_join(
+                ., BMPspending_summary %>% expand(frac, BMP = full.list.of.BMPs), by = c("frac", "BMP")
+              ) %>%
+              mutate(
+                Total_Spent = case_when(
+                  is.na(Total_Spent) ~ 0, !is.na(Total_Spent) ~ Total_Spent
+                ),
+                BMP_Category = case_when(
+                  BMP %in% c("WWTP_upgrades") ~ "Point Source BMPs",
+                  BMP %in% c("Grassed_Buffer", "Forested_Buffer") ~
+                    "Riparian Buffer BMPs",
+                  BMP %in% c(
+                    "Biofiltration_w_Underdrain",
+                    "Bioretention_Basin",
+                    "Enhanced_Biofiltration_w_ISR",
+                    "Extended_Dry_Detention_Basin",
+                    "Grass_Swale_w_detention",
+                    "Gravel_Wetland",
+                    "Infiltration_Basin",
+                    "Infiltration_Chamber",
+                    "Infiltration_Trench",
+                    "Porous_Pavement_w_subsurface_infiltration",
+                    "Porous_Pavement_w_underdrain",
+                    "Sand_Filter_w_underdrain",
+                    "Wet_Pond"
+                  ) ~ "Urban BMPs",
+                  BMP %in% c(
+                    "Conservation",
+                    "Contour_Farming",
+                    "Fert_20",
+                    "Filterstrip",
+                    "Manure_Injection",
+                    "MIN_TILL", "Ponds",
+                    "Terrace_Only",
+                    "Terrace_Waterway",
+                    "Waterway_Only"
+                  ) ~ "Agricultural BMPs",
+                  BMP %in% c(
+                    "class_1_upgrade",
+                    "class_2_upgrade",
+                    "class_3_upgrade",
+                    "class_4_upgrade",
+                    "class_5_upgrade",
+                    "class_6_upgrade",
+                    "class_7_upgrade",
+                    "class_8_upgrade",
+                    "Sewer_convert"
+                  ) ~ "Septic BMPs"
+                ),
+                param = param
+              ) %>%
+              left_join(., frac.summary, by = "frac") %>%
+              filter(solve_result == "solved") %>%
+              mutate(
+                setmember = unlist(lapply(str_split(param, pattern = "-"), "[[", 2)),
+                param = unlist(lapply(str_split(param, pattern = "-"), "[[", 1))
+              )
+            
+            dat.split.parsed <- rbind(dat.split.parsed, BMPspending_summary_full)
+          }
+          
+        }, error = function(e) {
+          warning(paste("Error processing inner loop j =", j, "for file", file_path, ":", e$message))
+        })
+      }
+      
+      cat("Successfully parsed:", param, "(", nrow(dat.split.parsed), "rows )\n")
+      return(dat.split.parsed)
+      
+    }, error = function(e) {
+      warning(paste("Attempt", attempt, "failed for file", file_path, ":", e$message))
+      
+      if (attempt < max_retries) {
+        Sys.sleep(1)  # Brief pause before retry
+      } else {
+        cat("Failed to parse file:", file_path, "\n")
+        return(data.frame())  # Return empty data frame for failed files
+      }
+    })
+  }
+  
+  return(data.frame())  # Return empty if all attempts failed
+}
+
+# Get list of result files
+list.results <- list.files(
+  path = NEOSresults, pattern = "NEOSresult_*", full.names = TRUE
+)
+
+list.results <- list.results[grep("_reference", list.results, invert = TRUE)]
+
+# Filter out any files that don't pass validation
+valid_files <- sapply(list.results, function(f) {
+  validate_result_file(f, c("cost =", "solve_result", "frac ="))
+})
+
+list.results <- list.results[valid_files]
+
+cat("Found", length(list.results), "valid result files to process.\n")
+
+if (length(list.results) == 0) {
+  stop("No valid result files found. Please check NEOS job submissions.")
+}
+
+# Process files with progress tracking
+all.results <- data.frame()
+error_files <- character()
+successful_files <- 0
+
+for(i in 1:length(list.results)) {
+  cat("Processing file", i, "of", length(list.results), "...\n")
+  
+  result_data <- parse_single_result_file(list.results[i])
+  
+  if (nrow(result_data) > 0) {
+    all.results <- rbind(all.results, result_data)
+    successful_files <- successful_files + 1
+  } else {
+    error_files <- c(error_files, list.results[i])
+  }
+}
+
+# Summary
+cat("\n=== PARSING SUMMARY ===\n")
+cat("Successfully parsed:", successful_files, "out of", length(list.results), "files\n")
+cat("Total rows in final dataset:", nrow(all.results), "\n")
+
+if(length(error_files) > 0) {
+  cat("\nFiles with parsing errors:\n")
+  for(file in error_files) {
+    cat(" -", basename(file), "\n")
+  }
+  
+  # Save error log
+  error_log <- data.frame(
+    error_file = error_files,
+    timestamp = Sys.time()
+  )
+  write.csv(error_log, file = paste0(NEOSresults, "parsing_errors_log.csv"), row.names = FALSE)
+  cat("Error log saved to:", paste0(NEOSresults, "parsing_errors_log.csv"), "\n")
+} else {
+  cat("All files processed successfully!\n")
+}
+
+# Validate final results
+if (nrow(all.results) == 0) {
+  stop("No data was successfully parsed. Please check result files and parsing logic.")
+}
+
+# Check for reasonable data ranges
+param_counts <- all.results %>% 
+  group_by(param, setmember) %>% 
+  summarize(n_observations = n(), .groups = "drop")
+
+cat("\nParameter observation counts:\n")
+print(param_counts)
+
+# Save results
+save(all.results, file = paste0(NEOSresults, "all_results.RDa"))
+cat("\nResults saved to:", paste0(NEOSresults, "all_results.RDa"), "\n")
+
+# For subsequent analysis, load the saved results
+all.results <- get(load(paste0(NEOSresults, "all_results.RDa")))
+```
+
+## Parse NEOS sensitivity results
+```{r}
+all.results.compare <- all.results %>%
+  left_join(
+    ., 
+    BMPspending_summary_reference %>% 
+      select(BMP, Total_Spent, BMP_Category, cost),
+    by = c("BMP", "BMP_Category"), suffix = c("_sens", "_ref")
+  ) 
+
+all.costs <- all.results.compare %>%
+  group_by(param, setmember, frac) %>%
+  summarize(cost_sens = mean(cost_sens), cost_ref = mean(cost_ref))  %>%
+  mutate(
+    param = case_when(
+      param == "ripbuf_costs_operati" ~ "ripbuf_costs_operations",
+      param == "unbuffered_banklengt" ~ "unbuffered_banklength",
+      param == "urban_bmp_implementa" ~ "urban_bmp_implementationpotential",
+      param == "urban_cost_adjustmen" ~ "urban_cost_adjustment_coef",
+      TRUE ~ param
+    ),
+    setmember = case_when(
+      setmember == "Biofiltration_w_Underdrai" ~ "Biofiltration_w_Underdrain",
+      setmember == "Enhanced_Biofiltration_w_" ~ "Enhanced_Biofiltration_w_ISR",
+      setmember == "Extended_Dry_Detention_Ba" ~ "Extended_Dry_Detention_Basin",
+      setmember == "Porous_Pavement_w_subsurf" ~ 
+        "Porous_Pavement_w_subsurface_infiltration",
+      setmember == "Porous_Pavement_w_underdr" ~ "Porous_Pavement_w_underdrain",
+      TRUE ~ setmember
+    ),
+    param_source = case_when(
+      param %in% c(
+        "ag_frac_max", 
+        "ag_frac_min", 
+        "loads_lim_N1", 
+        "loads_lim_P1", 
+        "loads_lim_P2",
+        "ripbuf_frac_max",
+        "ripbuf_frac_min",
+        "urban_design_depth", 
+        "urban_frac_max",
+        "urban_frac_min"
+      ) ~ 
+        "User Supplied", 
+      TRUE ~ "Provided Data"
+    )
+  )
+
+tolerance.ranges_cost <- all.costs %>%
+  mutate(
+    percent_difference = (cost_ref - cost_sens) / cost_ref
+  ) %>%
+  filter(abs(percent_difference) <= 0.1) %>%
+  group_by(param, setmember) %>%
+  summarize(tolerance_low = min(frac), tolerance_high = max(frac)) 
+
+all.spatial <- all.results.compare %>%
+  mutate(
+    percent_difference = case_when(
+      Total_Spent_ref != 0 ~ 
+        (Total_Spent_ref - Total_Spent_sens) / Total_Spent_ref, 
+      Total_Spent_ref == 0 ~ 
+        case_when(Total_Spent_sens == 0  ~ 0, Total_Spent_sens != 0 ~ Inf)
+    )
+  ) %>%
+  mutate(
+    param = case_when(
+      param == "ripbuf_costs_operati" ~ "ripbuf_costs_operations",
+      param == "unbuffered_banklengt" ~ "unbuffered_banklength",
+      param == "urban_bmp_implementa" ~ "urban_bmp_implementationpotential",
+      param == "urban_cost_adjustmen" ~ "urban_cost_adjustment_coef",
+      TRUE ~ param
+    ),
+    setmember = case_when(
+      setmember == "Biofiltration_w_Underdrai" ~ "Biofiltration_w_Underdrain",
+      setmember == "Enhanced_Biofiltration_w_" ~ "Enhanced_Biofiltration_w_ISR",
+      setmember == "Extended_Dry_Detention_Ba" ~ "Extended_Dry_Detention_Basin",
+      setmember == "Porous_Pavement_w_subsurf" ~ 
+        "Porous_Pavement_w_subsurface_infiltration",
+      setmember == "Porous_Pavement_w_underdr" ~ "Porous_Pavement_w_underdrain",
+      TRUE ~ setmember
+    ),
+    param_source = case_when(
+      param %in% c(
+        "ag_frac_max", 
+        "ag_frac_min", 
+        "loads_lim_N1", 
+        "loads_lim_P1", "
+        loads_lim_P2",
+        "ripbuf_frac_max",
+        "ripbuf_frac_min",
+        "urban_design_depth", 
+        "urban_frac_max",
+        "urban_frac_min"
+      ) ~ 
+        "User Supplied", 
+      TRUE ~ "Provided Data"
+    )
+  )
+
+
+tolerance.ranges_spatial <- all.spatial %>%
+  filter(abs(percent_difference) <= 0.1 ) %>%
+  group_by(param, setmember, BMP) %>%
+  summarize(
+    tolerance_low_byBMP = min(frac), tolerance_high_byBMP = max(frac)
+  ) %>%
+  ungroup() %>%
+  group_by(param, setmember) %>%
+  summarize(
+    tolerance_low = max(tolerance_low_byBMP), 
+    tolerance_high = min(tolerance_high_byBMP)
+  )
+
+tolerance.ranges <- full_join(
+  tolerance.ranges_cost, 
+  tolerance.ranges_spatial, 
+  by = c("param", "setmember"), 
+  suffix = c(".cost", ".spatial")
+) %>%
+  rowwise() %>%
+  mutate(
+    tolerance_low = max(tolerance_low.cost, tolerance_low.spatial),
+    tolerance_high = min(tolerance_high.cost, tolerance_high.spatial),
+    param_source = case_when(
+      param %in% c(
+        "ag_frac_max", 
+        "ag_frac_min", 
+        "loads_lim_N1", 
+        "loads_lim_P1", 
+        "loads_lim_P2",
+        "ripbuf_frac_max",
+        "ripbuf_frac_min",
+        "urban_design_depth", 
+        "urban_frac_max",
+        "urban_frac_min"
+      ) ~ 
+        "User Supplied", 
+      TRUE ~ "Provided Data"
+    ),
+    lowendtolerance = case_when(
+      param %in% c(
+        "ag_frac_min", 
+        "point_effic_P", 
+        "ripbuf_costs_operati",
+        "ripbuf_frac_min", 
+        "urban_frac_min"
+      ) ~ "not applicable",
+      tolerance_low >= 0.99 ~ "highly sensitive",
+      tolerance_low >= 0.9 ~ "sensitive",
+      tolerance_low < 0.9 ~ "not sensitive"
+    ),
+    highendtolerance = case_when(
+      param %in% c(
+        "ag_frac_min", 
+        "point_effic_P", 
+        "ripbuf_costs_operati",
+        "ripbuf_frac_min", 
+        "urban_frac_min",
+        "ag_frac_max",
+        "urban_frac_max",
+        "ripbuf_frac_max"
+      ) ~ "not applicable",
+      tolerance_high <= 1.01 ~ "highly sensitive",
+      tolerance_high <= 1.1 ~ "sensitive",
+      tolerance_high > 1.1 ~ "not sensitive"
+    )
+  ) %>%
+  mutate(
+    param = case_when(
+      param == "ripbuf_costs_operati" ~ "ripbuf_costs_operations",
+      param == "unbuffered_banklengt" ~ "unbuffered_banklength",
+      param == "urban_bmp_implementa" ~ "urban_bmp_implementationpotential",
+      param == "urban_cost_adjustmen" ~ "urban_cost_adjustment_coef",
+      TRUE ~ param
+    ),
+    setmember = case_when(
+      setmember == "Biofiltration_w_Underdrai" ~ "Biofiltration_w_Underdrain",
+      setmember == "Enhanced_Biofiltration_w_" ~ "Enhanced_Biofiltration_w_ISR",
+      setmember == "Extended_Dry_Detention_Ba" ~ "Extended_Dry_Detention_Basin",
+      setmember == "Porous_Pavement_w_subsurf" ~ 
+        "Porous_Pavement_w_subsurface_infiltration",
+      setmember == "Porous_Pavement_w_underdr" ~ "Porous_Pavement_w_underdrain",
+      TRUE ~ setmember
+    )
+  )
+
+```
+## Summarize Tolerance Ranges
+```{r}
+tolerance.ranges %>% 
+  mutate(range = log10(tolerance_high) - log10(tolerance_low)) %>%
+  arrange(range)
+tolerance.ranges %>% 
+  mutate(range = log10(tolerance_high) - log10(tolerance_low)) %>%
+  group_by(param) %>%
+  summarize(median_range = median(range)) %>%
+  arrange(median_range)
+tolerance.ranges %>% 
+  mutate(range = log10(tolerance_high) - log10(tolerance_low)) %>%
+  group_by(setmember) %>%
+  summarize(median_range = median(range)) %>%
+  arrange(median_range)
+
+tolerance.ranges %>%
+  group_by(param) %>%
+  mutate(mean_low = mean(tolerance_low), mean_high = mean(tolerance_high)) %>%
+  filter(mean_low > 0.9, mean_high <1.1)
+
+tolerance.ranges %>%
+  group_by(param) %>%
+  summarize(mean_low = mean(tolerance_low), mean_high = mean(tolerance_high)) %>%
+  filter(mean_low > 0.9, mean_high <1.1)
+
+tolerance.ranges %>%
+  group_by(param) %>%
+  summarize(mean_low = mean(tolerance_low), mean_high = mean(tolerance_high)) %>%
+  filter(mean_low > 0.99, mean_high <1.01)
+
+tolerance.ranges %>%
+  filter(tolerance_low >= 0.99, tolerance_high <= 1.01)
+```
+
+
+## Plot tolerance ranges by parameter value
+```{r sensfigs}
+setmember_shapes <- c(1:25, 1, 2, 3, 4, 7, 11)
+
+# Get tolerance range based on cost
+lowendtolrange <- mean(all.costs$cost_ref) * 0.9
+highendtolrange <- mean(all.costs$cost_ref) * 1.1
+
+## View Sensitivity of Cost to all Parameters
+cost.sens <- ggplot(
+  # data = all.costs, 
+  data = all.costs %>% 
+    filter(
+      # param_source == "Provided Data",
+      param %in% c(
+        "agcost_frac",   # This selection of parameters are those with tolerance ranges <10%
+        "area",
+        "baseloads_N1",
+        "loads_lim_N1",
+        "other_loads_N1",
+        "riparianremoval_N1",
+        "ripbuf_costs_capital",
+        "ripbuf_frac_max",
+        "runoff_coeff_urban",
+        "unbuffered_banklength",
+        "urban_cost_adjustment_coef"
+      )
+    ) %>%
+    ungroup() %>%
+    group_by(param, frac) %>%
+    summarize(cost_sens = mean(cost_sens)) %>%
+    mutate(
+      param = case_when(
+        param %in% c("runoff_coeff_urban", "urban_cost_adjustment_coef") ~
+          "runoff_coeff_urban and urban_cost_adjustment_coef",
+        param %in% c(
+          "unbuffered_banklength", "ripbuf_costs_capital", "ripbuf_frac_max"
+        ) ~
+          "ripbuf_costs_capital, ripbuf_frac_max, and unbuffered_banklength",
+        TRUE ~ param
+      )
+    ),
+  mapping = aes(
+    x = frac, y = cost_sens, color = param
+  )
+) + 
+  annotate(
+    "rect",
+    xmin = 0.01, xmax = 100, ymin = lowendtolrange, ymax = highendtolrange,
+    fill = "grey95"
+  ) +
+  geom_line(show.legend = TRUE, lwd = 1) +
+  # geom_point(size = 3, show.legend = FALSE) +
+  # geom_smooth(se = FALSE, method = "loess", lwd = 2, formula = "y~x") +
+  scale_x_log10(
+    name = "Fraction of Original", 
+    breaks = c(0.01, 0.1, 1, 10, 100), 
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  # facet_wrap(facets = c("param", "setmember"), ncol = 4) + #scales = "free_y"
+  # facet_wrap(facets = c("param"), ncol = 4) + #scales = "free_y"
+  scale_y_log10(
+    name = "Total Annualized Cost (x $1,000,000)",
+    breaks = c(100000, 1000000, 10000000, 100000000, 1000000000), 
+    labels = c("$0.1", "$1", "$10", "$100", "$1,000")
+  ) +
+  theme(legend.position = "bottom", legend.direction = "vertical") 
+
+print(cost.sens)
+
+# 
+# 
+## View Sensitivity of Spatial to all Parameters
+space.sens <- ggplot(
+  data = all.spatial %>% 
+    filter(
+      # param_source == "Provided Data",
+      param %in% c(
+        "agcost_frac",   # This selection of parameters are those with tolerance ranges <10%
+        "area",
+        "baseloads_N1",
+        "loads_lim_N1",
+        "other_loads_N1",
+        "riparianremoval_N1",
+        "ripbuf_costs_capital",
+        "ripbuf_frac_max",
+        "runoff_coeff_urban",
+        "unbuffered_banklength",
+        "urban_cost_adjustment_coef"
+      )
+    ) %>%
+    ungroup() %>%
+    group_by(param, frac) %>%
+    # mutate(
+    #   percent_difference = case_when(
+    #     !is.infinite(percent_difference) ~ percent_difference,
+    #     is.infinite(percent_difference) ~ 1000000
+    #   )
+    #     ) %>%
+    summarize(spatial_sens = max(abs(percent_difference))) %>%
+    mutate(
+      param = case_when(
+        param %in% c("runoff_coeff_urban", "urban_cost_adjustment_coef") ~
+          "runoff_coeff_urban and urban_cost_adjustment_coef",
+        param %in% c(
+          "unbuffered_banklength", "ripbuf_costs_capital", "ripbuf_frac_max"
+        ) ~
+          "ripbuf_costs_capital, ripbuf_frac_max, and unbuffered_banklength",
+        TRUE ~ param
+      )
+    ) %>%
+    drop_na(),
+  mapping = aes(
+    x = frac,
+    y = abs(spatial_sens),
+    color = param
+  )
+) +
+  geom_rect(
+    inherit.aes = FALSE,
+    mapping = aes(
+      xmin = 0.01, xmax = 100, ymin = 0, ymax = 0.1
+    ),
+    fill = "grey95"
+  ) +
+  geom_line(show.legend = FALSE, lwd = 1) +
+  # geom_point(size = 3, show.legend = FALSE) +
+  # geom_smooth(se = FALSE, method = "loess", lwd = 2, formula = "y~x") +
+  scale_x_continuous(
+    trans = "log10",
+    name = "Fraction of Original", 
+    breaks = c(0.01, 0.1, 1, 10, 100), 
+    labels = c("0.01", "0.1", "1", "10", "100")
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  # facet_wrap(facets = c("param", "setmember"), ncol = 4) + #scales = "free_y"
+  # facet_wrap(facets = c("param"), ncol = 4) + #scales = "free_y"
+  scale_y_continuous(
+    trans = "log10", 
+    name = "Optimized spending per BMP / default", 
+    limits = c(0.001, 1)
+  ) 
+
+print(space.sens)
+
+# 
+# ## View Tolerance Range as fractions
+# tolerance_ranges <- ggplot(
+#   data = tolerance.ranges, 
+#   mapping = aes(x = tolerance_low, y = tolerance_high, color = param, shape = setmember)
+# ) + 
+#   geom_point(size = 5, show.legend = TRUE, alpha = 0.5) +
+#   scale_shape_manual(values = setmember_shapes) +
+#   labs(
+#     title = "Local Sensitivity Parameter Tolerance", 
+#     color = "Parameter"
+#   ) +
+#   scale_x_log10(
+#     name = "Tolerance Range Low End (as fraction of default value)", 
+#     lim = c(0.01,1)
+#   ) + 
+#   scale_y_log10(
+#     name = "Tolerance Range High End (as fraction of default value)", 
+#     lim = c(1, 100)
+#   ) +
+#   geom_hline(yintercept = 1.1, color = "grey", lty = 2) + 
+#   geom_vline(xintercept = 0.9, color = "grey", lty = 2) +
+#   annotate("text", x = 1, y = 1, label = "Highly Sensitive") +
+#   annotate("text", x = 0.1, y = 1, label = "Sensitive to Higher Values") +
+#   annotate("text", x = 1, y = 10, label = "Sensitive to Lower Values") +
+#   annotate("text", x = 0.1, y = 10, label = "Not Sensitive") +
+#   facet_wrap("param_source")
+# ggsave(
+#   plot = tolerance_ranges, 
+#   filename = paste0(figureoutputs, "ToleranceRanges.png"), 
+#   width = 16,
+#   height = 10,
+#   units = "in",
+#   limitsize = FALSE
+# )
+# 
+# nb.cols <- 16
+# mycolors <- colorRampPalette(brewer.pal(8, "Set3"))(nb.cols)
+# 
+# tolerance.zoom <- ggplot(
+#   data = tolerance.ranges %>% filter(tolerance_low > 0.9 & tolerance_high < 1.1), 
+#   mapping = aes(x = tolerance_low, y = tolerance_high, color = param, shape = setmember)
+# ) + 
+#   geom_point(size = 5, show.legend = TRUE) +
+#   scale_shape_manual(values = setmember_shapes[14:27]) +
+#   labs(
+#     title = "Local Sensitivity Parameter Tolerance", 
+#     color = "Parameter"
+#   ) +
+#   scale_x_log10(
+#     name = "Tolerance Range Low End (as fraction of default value)", 
+#     lim = c(0.8,1)
+#   ) + 
+#   scale_y_log10(
+#     name = "Tolerance Range High End (as fraction of default value)", 
+#     lim = c(1, 1.2)
+#   ) +
+#   geom_hline(yintercept = 1.1, color = "grey", lty = 2) + 
+#   geom_vline(xintercept = 0.9, color = "grey", lty = 2) +
+#   annotate("text", x = 1, y = 1.07, label = "Highly Sensitive") +
+#   annotate("text", x = 0.8, y = 1, label = "Sensitive to Higher Values") +
+#   annotate("text", x = 1, y = 1.2, label = "Sensitive to Lower Values") +
+#   annotate("text", x = 0.8, y = 1.2, label = "Not Sensitive") +
+#   facet_wrap("param_source") +
+#   scale_color_manual(values = mycolors)
+# 
+# ggsave(
+#   plot = tolerance.zoom, 
+#   filename = paste0(figureoutputs, "ToleranceRanges_zoomed.png"), 
+#   width = 16,
+#   height = 10,
+#   units = "in",
+#   limitsize = FALSE
+# )
+```
+
+
+
+## Save output
+```{r write output}
+write_csv(tolerance.ranges, file = paste0(figureoutputs, "ToleranceRanges.csv"))
+
+write_csv(
+  tolerance.ranges %>%
+    filter(param_source == "User Supplied") %>%
+    select(param, setmember, lowendtolerance, highendtolerance) %>%
+    rename(
+      Parameter = param, 
+      `Set member (BMP or other)` = setmember,
+      `Tolerance to decreased values` = lowendtolerance,
+      `Tolerance to increased values` = highendtolerance
+    ),
+  file = paste0(figureoutputs, "UserGuide_table5-1.csv")
+)
+
+write_csv(
+  tolerance.ranges %>%
+    filter(param_source == "Provided Data") %>%
+    select(param, setmember, lowendtolerance, highendtolerance) %>%
+    rename(
+      Parameter = param, 
+      `Set member (BMP or other)` = setmember,
+      `Tolerance to decreased values` = lowendtolerance,
+      `Tolerance to increased values` = highendtolerance
+    ),
+  file = paste0(figureoutputs, "UserGuide_table5-2.csv")
+)
+
+ggsave(
+  plot = cost.sens,
+  filename = paste0(figureoutputs, "Fig3a.pdf"),
+  width = 6,
+  height = 6,
+  units = "in",
+  limitsize = FALSE,
+  useDingbats = FALSE
+)
+
+ggsave(
+  plot = space.sens,
+  filename = paste0(figureoutputs, "Fig3b.pdf"),
+  width = 6,
+  height = 3,
+  units = "in",
+  limitsize = FALSE,
+  useDingbats = FALSE
+)
+```
+
+## Fit model curves to the loads_lim_N1 parameter sensitivity
+```{r}
+
+loads_lim_N1model <- with(
+  all.costs %>% filter(param == "loads_lim_N1"), lm(cost_sens ~ log(frac))
+)
+
+bee <- all.costs %>% 
+  filter(
+    # param_source == "Provided Data",
+    param %in% c(
+      "loads_lim_N1"
+    )
+  )%>%
+  ungroup() %>%
+  group_by(param, frac) %>%
+  summarize(cost_sens = mean(cost_sens)) %>%
+  ungroup() # %>%
+# add_row(
+#   param = "loads_lim_N1",
+#   frac = c(1.006, 1.007, 1.008, 1.009), 
+#   cost_sens = exp(exp(predict.lm(
+#     loads_lim_N1model, data.frame(frac = c(1.006, 1.007, 1.008, 1.009)
+#     ))
+#   ))
+# )
+
+ggplot(bee, aes(x = frac, y = cost_sens)) + 
+  geom_point() + 
+  scale_x_continuous(trans = "logit")
+```
+

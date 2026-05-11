@@ -1,0 +1,5347 @@
+---
+title: "Global Sensitivity Analysis"
+author: "Cathy Chamberlin, Sam Ennett"
+date: "10/23/2025"
+output: pdf_document
+---
+### Last updated 10/23/2025 to reflect new structure of dynamic RBEROST and use the code written in the uncertainty analysis section.
+
+---
+
+## Set Filepath locations
+### AMPL scripts
+The AMPL scripts folder will be the location where the AMPL model files for each scenario will be written. 
+You will also need to paste the AMPL files for the RBEROST model you wish to analyze the sensitivity of into this folder. These files will come from the pre-processing code outputs folder.
+
+### NEOS results
+The program does not automatically create the following folders, users must create them prior to running the analysis.
+This folder will be where the results from NEOS are saved. This analysis will generate a large number of files, so it is recommended to have a dedicated folder for these results.
+
+### Figure outputs
+This folder will be where the figures generated from the sensitivity analysis are saved.
+
+```{r set filepaths}
+# This variable represents the working directory where RBEROST is located. You will need to write out the full path to your RBEROST inputs.
+working_dir <- "C:/RBEROST/Tier_1_Optimization-SSWR.5.3.2/"
+# Define file paths for the AMPL scripts, NEOS results, and figure outputs.
+# The program does not automatically create the following folders, users must create them prior to running the analysis.
+# It is recommended to have dedicated folders for each of these to keep files organized. This analysis will generate a large number of files.
+AMPLscriptsfolder <- paste0(working_dir, "RBEROST-Northeast/SensitivityAnalysis/AMPLscripts/Pequonnock River/")
+NEOSresults <- paste0(working_dir, "RBEROST-Northeast/SensitivityAnalysis/NEOSResults/Pequonnock River/")
+figureoutputs <- paste0(working_dir, "RBEROST-Northeast/SensitivityAnalysis/Images/Pequonnock River/")
+```
+
+
+## Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+if (!require(pacman, quietly = TRUE)) install.packages("pacman")
+pacman::p_load(
+    data.table, tidyverse, foreach, nhdplusTools, sf, doParallel, rneos
+)
+
+theme_set(theme_classic())
+registerDoParallel()
+
+options(RCurlOptions = list(ssl.verifypeer = FALSE))
+
+my_NgetSolverTemplate <- function (
+  category, solvername, inputMethod, nc = CreateNeosComm()
+) {
+  if (!(class(nc) == "NeosComm")) {
+    stop("\nObject provided for 'nc' must be of class 'NeosComm'.\n")
+  }
+  
+  call <- match.call()
+  
+  ans <- xml.rpc(
+    url = nc@url, 
+    method = "getSolverTemplate", 
+    .args = list(
+      category = category, solvername = solvername, inputMethod = inputMethod
+    ), 
+    .convert = TRUE, 
+    .opts = nc@curlopts, 
+    .curl = nc@curlhandle
+  )
+  
+  email.xmlcode <- "\n\n<email><![CDATA[...Insert Value Here...]]></email>"
+  
+  ans_rev <- if(
+    grepl("email", ans)
+  ) {
+    ans
+  } else {
+    paste0(
+      substr(ans, 1, nchar(ans)-13), 
+      email.xmlcode, 
+      substr(ans, (nchar(ans)-13), nchar(ans))
+    )
+  }
+  
+  xml <- xmlRoot(xmlTreeParse(ans_rev, asText = TRUE))
+  
+  res <- new("NeosXml", xml = xml, method = "getSolverTemplate",
+             call = call, nc = nc)
+  
+  return(res)
+}
+```
+
+
+## Check the UserSpecs settings
+```{r identify global sens scenario}
+default_parameters <-TRUE # TRUE or FALSE. TRUE indicates the unconstrained model.
+
+parameter_tag <- "" # a character string that will be appended to the end of the sensitivity AMPL files for reference. If running default parameters, can put an empty string ("")
+
+nbootstraps <- 1000
+
+# Batch processing settings
+# ========================
+# IMPORTANT: Batch processing is recommended for large sensitivity analyses
+# to overcome NEOS server resource limitations. The system automatically splits
+# large jobs into smaller batches and combines the results.
+#
+# CONFIGURATION OPTIONS:
+# batch_size: Number of bootstraps per batch
+#   - Recommended: 25-75 depending on watershed size and complexity
+#   - Smaller batches = more reliable but slower overall
+#   - Larger batches = faster but may hit NEOS limits
+#
+# use_batch_processing: Enable/disable batch processing
+#   - TRUE: Use batch processing (recommended for >75 bootstraps)
+#   - FALSE: Single job submission (may fail for large analyses)
+#
+# TIMING ESTIMATES:
+#   - Small batches (25): ~5-15 minutes per batch
+#   - Medium batches (50): ~10-30 minutes per batch  
+#   - Large batches (75): ~20-45 minutes per batch
+#
+# TRUNCATION IMPROVEMENTS:
+#   - Compact output format to prevent NEOS result truncation
+#   - Essential outputs only for post-processing compatibility
+#   - Optimized display commands with omit_zero_rows/cols options
+#   - Structured bootstrap result reporting for reliable parsing
+#
+batch_size <- 50  # Number of bootstraps per batch (adjust based on NEOS limits)
+use_batch_processing <- TRUE  # Set to FALSE to use original single-job approach
+
+# Calculate number of batches needed
+if(use_batch_processing) {
+  n_batches <- ceiling(nbootstraps / batch_size)
+  cat("=== BATCH PROCESSING CONFIGURATION ===\n")
+  cat("Total bootstraps requested:", nbootstraps, "\n")
+  cat("Batch size:", batch_size, "\n") 
+  cat("Number of batches:", n_batches, "\n")
+  actual_bootstraps <- n_batches * batch_size
+  cat("Actual bootstraps (due to batching):", actual_bootstraps, "\n")
+  if(actual_bootstraps > nbootstraps) {
+    cat("Extra bootstraps:", actual_bootstraps - nbootstraps, "(will be included in analysis)\n")
+  }
+  cat("Estimated time per batch: 10-30 minutes\n")
+  cat("Total estimated time:", round((n_batches * 20)/60, 1), "hours\n")
+  cat("=======================================\n")
+} else {
+  n_batches <- 1
+  cat("=== SINGLE JOB CONFIGURATION ===\n")  
+  cat("Running single job with", nbootstraps, "bootstraps\n")
+  if(nbootstraps > 75) {
+    cat("WARNING: Large jobs may fail due to NEOS resource limits\n")
+    cat("Consider enabling batch processing for better reliability\n")
+  }
+  cat("=================================\n")
+}
+```
+
+
+## Source RBEROST Preprocessor
+```{r source RBEROST}
+# This variable represents the location of input data files used to develop AMPL model files. If you are using the default folder structure, this path should not need to be changed.
+InPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/")
+
+# This variable represents the location where AMPL model files will be printed for use on the NEOS server. This path is defined above as AMPLscriptsfolder. Do not edit this line.
+OutPath<-paste0(AMPLscriptsfolder)
+
+# Define the name of the UserSpecs input file. This file contains the user specifications for the optimization, including the BMPs that will be considered in the optimization. If you wish to change which BMPs are considered, you can edit this file.
+user_specs_name <- "01_UserSpecs_BMPs_wCS_NoSeptic.csv" # 01_UserSpecs_BMPs_wCS_NoSeptic.csv
+
+MODE <- "Select"
+
+# Select watershed(s) to include in the model
+# Note: You can select multiple watersheds by adding them to the vector below, separated by commas. For example: c("Upper Connecticut River", "Housatonic River")
+watershed_choices <- c("Pequonnock River")
+
+# Watersheds available in the Dynamic Long Island Sound Model:
+# Bantam Lake
+# Batterson Park Pond
+# Byram River
+# Upper Connecticut River
+# Upper Middle Connecticut River
+# Lower Middle Connecticut River
+# Lower Connecticut River
+# Farm River
+# Housatonic River
+# Kenosia Lake
+# Linsley Pond Cedar Pond
+# Little Narragansett Bay
+# Mystic Harbor
+# New Haven Harbor
+# Niantic Bay
+# Norwalk Harbor
+# Pequonnock River
+# Saugatuck Estuary
+# Southport Harbor Sasco Brook
+# Stonington Harbor
+# Thames River
+
+# Select years to include in the model
+model_years <- c("01") #, "02"
+# Note: years are available from 00 to 20; formatted as "02", "03", ...
+
+# Load parameter specification
+actionable_load <- TRUE # If TRUE, the model will exclude "other" loads from sources such as snowmelt and atmospheric deposition for which there are no applicable BMPs that can reduce them
+# Note: Setting to FALSE is much more likely to result in infeasible results since "other" loads typically make up sizeable portions of overall loadings within a watershed, and as such the reduction target percentages exceed the amount that can be reduced by BMPs in other categories. 
+
+# This variable represents the planning horizon in terms of years. Default is 15.
+horizon <- 15
+
+# This variable represents to expected interest rate. Default is 0.03, or 3%.
+interest_rate <- 0.03
+
+# This variable lets the user decide if they wish to consider agricultural BMP efficiencies of practices versus "No Practice" (a default of no conservation practices) or "Baseline" (a default of practices currently in place, and implementing a BMP will remove practices currently in place).
+AgBMPcomparison <- "No Practice"
+
+# This variable decides if you will run RBEROST with or without uncertainty. It can be TRUE or FALSE. Running with uncertainty takes longer than running without.
+IncludeUncertainty <- TRUE
+
+# If running RBEROST with uncertainty, how many scenarios would you like to view? Default is 3.
+n.scenarios <- 3 
+
+# If running RBEROST with uncertainty, how different would you like the scenarios to be? Each scenario will be solved for loading limits that are a certain percentage lower than the previous. Default is 0.01, or 1%.
+scenariostepchange <- 0.01
+
+# ----- Do not change anything below this line -------
+
+setwd(working_dir) # "../"
+source(
+  paste0(working_dir,"RBEROST-Northeast/R/01_Optimization_Preprocessing_gateway-Northeast.R")
+)
+
+```
+
+## Source other code
+```{r source other data}
+setwd(working_dir)
+source(paste0(working_dir,"./RBEROST-Northeast/R/00_ProcessHSGdata-Northeast.R"))
+
+dat.rds <- read.csv(paste0(working_dir,"./Data/ptbldftprntvspthria.csv")) # Data from N. Detenbeck, using VT high resolution landcover imagery
+```
+
+## Calculate Additional Bounds for Sensitivity
+```{r additional calculations}
+### Calculate sums of loads for optimization
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+  param_loads_lim_tn_low <- unlist(
+    foreach(i = 1:length(temp_inc_tn_dat)) %do% {
+      
+      # For seasonal data, sum across all seasons and years
+      temp_data <- temp_inc_tn_dat[[i]]
+      
+      # Calculate total loads - only include actionable loads if actionable_load is TRUE
+      if(actionable_load) {
+        # Only include point, urban, ag (exclude "other" and potentially septic if not in model)
+        total_loads <- sum(
+          temp_data$in_poin + temp_data$in_urb + temp_data$in_ag,
+          na.rm = TRUE
+        )
+      } else {
+        # Include all loads including "other" and septic
+        total_loads <- sum(
+          temp_data$in_poin + temp_data$in_urb + temp_data$in_ag + 
+          if("in_other" %in% names(temp_data)) temp_data$in_other else 0, +
+          if("in_septic" %in% names(temp_data)) temp_data$in_septic else 0,
+          na.rm = TRUE
+        )
+      }
+      
+      (1 - 0.2) * total_loads
+    }
+  )
+  param_loads_lim_tn_high <- unlist(
+    foreach(i = 1:length(temp_inc_tn_dat)) %do% {
+      
+      # For seasonal data, sum across all seasons and years
+      temp_data <- temp_inc_tn_dat[[i]]
+      
+      # Calculate total loads - only include actionable loads if actionable_load is TRUE
+      if(actionable_load) {
+        # Only include point, urban, ag (exclude "other" and potentially septic if not in model)
+        total_loads <- sum(
+          temp_data$in_poin + temp_data$in_urb + temp_data$in_ag,
+          na.rm = TRUE
+        )
+      } else {
+        # Include all loads including "other" and septic
+        total_loads <- sum(
+          temp_data$in_poin + temp_data$in_urb + temp_data$in_ag + 
+          if("in_other" %in% names(temp_data)) temp_data$in_other else 0, +
+          if("in_septic" %in% names(temp_data)) temp_data$in_septic else 0,
+          na.rm = TRUE
+        )
+      }
+      
+      (1 - 0.02) * total_loads
+    }
+  )
+}
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+  param_loads_lim_tp_low <- unlist(
+    foreach(i = 1:length(temp_inc_tp_dat)) %do% {
+      
+      # For seasonal data, sum across all seasons and years
+      temp_data <- temp_inc_tp_dat[[i]]
+      
+      # Calculate total loads - only include actionable loads if actionable_load is TRUE
+      if(actionable_load) {
+        # Only include point, urban, ag (exclude "other")
+        total_loads <- sum(
+          temp_data$ip_poin + temp_data$ip_urb + temp_data$ip_ag,
+          na.rm = TRUE
+        )
+      } else {
+        # Include all loads including "other"
+        total_loads <- sum(
+          temp_data$ip_poin + temp_data$ip_urb + temp_data$ip_ag + 
+          if("ip_other" %in% names(temp_data)) temp_data$ip_other else 0,
+          na.rm = TRUE
+        )
+      }
+      
+      (1 - 0.2) * total_loads
+    }
+  )
+  param_loads_lim_tp_high <- unlist(
+    foreach(i = 1:length(temp_inc_tp_dat)) %do% {
+      
+      # For seasonal data, sum across all seasons and years
+      temp_data <- temp_inc_tp_dat[[i]]
+      
+      # Calculate total loads - only include actionable loads if actionable_load is TRUE
+      if(actionable_load) {
+        # Only include point, urban, ag (exclude "other")
+        total_loads <- sum(
+          temp_data$ip_poin + temp_data$ip_urb + temp_data$ip_ag,
+          na.rm = TRUE
+        )
+      } else {
+        # Include all loads including "other"
+        total_loads <- sum(
+          temp_data$ip_poin + temp_data$ip_urb + temp_data$ip_ag + 
+          if("ip_other" %in% names(temp_data)) temp_data$ip_other else 0,
+          na.rm = TRUE
+        )
+      }
+      
+      (1 - 0.02) * total_loads
+    }
+  )
+}
+
+HSGD_area <- dat.hsgvariability %>%
+  filter(HSG == "D", source == "NATSGO") %>%
+  mutate(
+    HSGDpctarea = mean(area_resample),
+    HSGDpctarea_se = sd(area_resample) / sqrt(10),
+    comid = as.character(comid)
+  )  %>%
+  ungroup() %>%
+  select(comid, HSGDpctarea, HSGDpctarea_se)
+
+# Get uncertainty in the percent of impervious area that is roads
+
+dat.rds.edit <- dat.rds %>% filter(ptbfarea < 30) # eliminates one outlier
+
+percentbuilding_perimparea <- (with(dat.rds.edit, lm(ptbfarea ~ ptHRIAarea))) # model the relationship
+
+error.pctroad <- summary(percentbuilding_perimparea)$coefficients["ptHRIAarea","Std. Error"] # The standard error of the slope refers to the standard error of building footprint when modeling it from impervious surface area. We are assuming that the footprint of roads and parking lots is 1 - the footprint of buildings. Therefore the standard error is the same. 
+
+# Make matrix of implementability of each urban BMP for each comid's impervious land
+# HSG D comids cannot have infiltration-based BMPs
+# Porous Pavement can only be implemented on 10% of impervious land.
+
+urban_bmp_implementationpotential_dat_se <- setNames(
+  data.frame(
+    matrix(
+      ncol = length(Urban_BMPs) * 2 + 1, 
+      nrow = length(streamcat_subset_all$comid)
+    )
+  ), 
+  c("comid", Urban_BMPs, paste0(Urban_BMPs, "_se"))
+) %>%
+  mutate(
+    comid = streamcat_subset_all$comid,
+    comid_form = paste0("'", comid, "'")
+  ) %>%
+  left_join(., comid.infiltrationrates.matched, by = "comid") %>%
+  left_join(., HSGD_area, by = "comid") %>%
+  mutate(
+    HSGDpctarea = replace_na(HSGDpctarea, 0),
+    HSGDpctarea_ster = HSGDpctarea_se
+  ) %>%
+  fill(HSGDpctarea_ster, .direction = "downup") %>%
+  mutate(
+    across(
+      .cols = all_of(Urban_BMPs), 
+      .fns = ~case_when(
+        cur_column() %in% c(
+          "Biofiltration_w_Underdrain", 
+          "Bioretention_Basin", 
+          "Enhanced_Biofiltration_w_ISR", 
+          "Extended_Dry_Detention_Basin", 
+          "Grass_Swale_w_detention", 
+          "Gravel_Wetland", 
+          "Sand_Filter_w_underdrain", 
+          "Wet_Pond"
+        ) ~ 
+          1, 
+        cur_column() == "Porous_Pavement_w_underdrain" ~ 0.1,
+        cur_column() %in% c(
+          "Infiltration_Basin", "Infiltration_Chamber", "Infiltration_Trench"
+        ) ~ case_when(
+          InfiltrationRate_inperhr <= 0.12 ~ 0, 
+          InfiltrationRate_inperhr >= 0.12 ~ 1,
+          is.na(InfiltrationRate_inperhr) ~ 0
+        ),
+        cur_column() == "Porous_Pavement_w_subsurface_infiltration" ~ case_when(
+          InfiltrationRate_inperhr <= 0.12 ~ 0,
+          InfiltrationRate_inperhr >= 0.12 ~ 0.1,
+          is.na(InfiltrationRate_inperhr) ~ 0
+        )
+      )
+    ),
+    HSGareacorrection = case_when(
+      InfiltrationRate_inperhr <= 0.12 ~ (1 - HSGDpctarea), 
+      InfiltrationRate_inperhr >= 0.12 ~ HSGDpctarea,
+      is.na(InfiltrationRate_inperhr) ~ 0
+    )
+  ) %>%
+  rowwise() %>%
+  mutate(
+    across(
+      .cols = contains("_se"), 
+      .fns = ~case_when(
+        gsub(cur_column(), pattern = "_se", replacement = "") %in% c(
+          "Biofiltration_w_Underdrain", 
+          "Bioretention_Basin", 
+          "Enhanced_Biofiltration_w_ISR", 
+          "Extended_Dry_Detention_Basin", 
+          "Grass_Swale_w_detention", 
+          "Gravel_Wetland", 
+          "Sand_Filter_w_underdrain", 
+          "Wet_Pond"
+        ) ~ 
+          0, 
+        gsub(
+          cur_column(), pattern = "_se", replacement = ""
+        ) == "Porous_Pavement_w_underdrain" ~ 
+          error.pctroad,
+        gsub(
+          cur_column(), pattern = "_se", replacement = ""
+        ) %in% c(
+          "Infiltration_Basin", "Infiltration_Chamber", "Infiltration_Trench"
+        ) ~ my_propogateerror(
+          vals = list(
+            if(HSGDpctarea >0) {c(HSGDpctarea, HSGDpctarea_ster)} else {c(1, HSGDpctarea_ster)}, 
+            c(1, HSGareacorrection)
+          ),
+          method = "mult"
+        ),
+        gsub(
+          cur_column(), pattern = "_se", replacement = ""
+        ) == "Porous_Pavement_w_subsurface_infiltration" ~ my_propogateerror(
+          vals = list(
+            if(HSGDpctarea >0) {c(HSGDpctarea, HSGDpctarea_ster)} else {c(1, HSGDpctarea_ster)}, 
+            c(0.1, error.pctroad), 
+            c(1, HSGareacorrection)
+          ),
+          method = "mult"
+        )
+      )
+    )
+  ) %>%  
+  select(comid_form, contains(Urban_BMPs)) %>%
+  fill(where(is.numeric), .direction = "downup")
+
+if(length(RiparianBuffer_BMPs) > 0) {
+  riparian_buffer_maximp_se <- foreach(
+    i = 1:length(RiparianBuffer_BMPs), .combine = "merge"
+  ) %do% {
+    RiparianBuffer_BMPs_tmp <- RiparianBuffer_BMPs[i]
+    
+    riparian.existingbuffer %>%
+      select(
+        comid, 
+        totalbanklength_ft, 
+        totalbanklength_ft_se,
+        contains(as.character(UserSpecs_bufferwidth_nearest[i]))
+      ) %>%
+      rename_with(
+        .fn = ~gsub(
+          paste0("_", UserSpecs_bufferwidth_nearest[i], "ft_ft"), '', .
+        ), 
+        .col = contains(as.character(UserSpecs_bufferwidth_nearest[i]))
+      ) %>%
+      rowwise %>%
+      mutate(
+        maximp = case_when(
+          RiparianBuffer_BMPs_tmp == "Forested_Buffer" ~ 
+            totalbanklength_ft - Forest_buffer,
+          RiparianBuffer_BMPs_tmp == "Grassed_Buffer" ~ 
+            totalbanklength_ft - Forest_buffer - Grass_buffer
+        ),
+        maximp_se = case_when(
+          RiparianBuffer_BMPs_tmp == "Forested_Buffer" ~ 
+            my_propogateerror(
+              vals = list(
+                c(totalbanklength_ft, totalbanklength_ft_se),
+                c(Forest_buffer, Forest_buffer_se)
+              ), 
+              method = "addsub"),
+          RiparianBuffer_BMPs_tmp == "Grassed_Buffer" ~ 
+            my_propogateerror(
+              vals = list(
+                c(totalbanklength_ft, totalbanklength_ft_se),
+                c(Forest_buffer, Forest_buffer_se),
+                c(Grass_buffer, Grass_buffer_se)
+              ), 
+              method = "addsub")
+        )
+      ) %>%
+      mutate(maximp = case_when(maximp < 0 ~ 0, maximp >= 0 ~ maximp)) %>%
+      select(comid, totalbanklength_ft_se, maximp_se) %>%
+      rename_with(.fn = ~paste(RiparianBuffer_BMPs_tmp), .cols = "maximp_se")
+  }
+}
+
+if(length(RiparianBuffer_BMPs) > 0) {
+  streambanklength_total_dat_se <- riparian_buffer_maximp_se %>% 
+    full_join(., streamcat_subset_all, by = "comid") %>%
+    filter(comid %in% streamcat_subset_all$comid) %>%
+    arrange(comid) %>%
+    mutate(
+      comid_form = paste0("'", comid, "'"), 
+      totalbanklength_ft = case_when(
+        is.na(totalbanklength_ft_se) ~ 0, 
+        !is.na(totalbanklength_ft_se) ~ totalbanklength_ft_se
+      )
+    ) %>%
+    select(comid_form, totalbanklength_ft)
+  
+  streambanklength_available_dat_se <-  riparian_buffer_maximp_se %>% 
+    full_join(., streamcat_subset_all, by = "comid") %>%
+    filter(comid %in% streamcat_subset_all$comid) %>%
+    arrange(comid) %>%
+    mutate(comid_form = paste0("'", comid, "'")) %>%
+    mutate(
+      across(
+        .cols = any_of(RiparianBuffer_BMPs), 
+        .fns = ~case_when(is.na(.) ~ 0, !is.na(.) ~ .)
+      )
+    ) %>%
+    select(comid_form, any_of(RiparianBuffer_BMPs))
+}
+```
+
+```{r free up memory}
+# This code removes some of the larger objects in order to speed up the following code
+# rm(dat.hsgvariability)
+
+```
+
+## Write Global Sensitivity Command Script
+```{r write command script}
+# Write Command Script ####
+
+cat(
+  " 
+#WMOST Optimization Screening Tool AMPL command file
+
+set Bootstraps;",
+paste0(
+  "\nlet Bootstraps := 1 .. ", 
+  nbootstraps, 
+  " by 1;\n\ndisplay Bootstraps;\n\n"
+),
+"
+for {b in Bootstraps} {
+",
+file = paste(
+  AMPLscriptsfolder, "STcommand_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp", 
+  sep=""
+),
+sep = "\n"
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "\nlet loads_lim_N",
+          i,
+          "_rev := Uniform(",
+          param_loads_lim_tn_low[i],
+          ", ",
+          param_loads_lim_tn_high[i],
+          ");"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "\nlet loads_lim_P",
+          i,
+          "_rev := Uniform(",
+          param_loads_lim_tp_low[i],
+          ", ",
+          param_loads_lim_tp_high[i],
+          ");"
+        ),    
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+cat(
+  "
+	let agcost_frac_rev := Uniform(1,5/3);
+  repeat {
+	  for {a in ag_bmp} {
+	    let ag_frac_min_rev[a] := 0;
+	    let ag_frac_max_rev[a] := Uniform(0.7, 1); 
+	  };
+	} until sum {a in ag_bmp} ag_frac_min_rev[a] <= 1;
+	repeat {
+	for {r in ripbuf_bmp} {
+	  let ripbuf_frac_min_rev[r] := 0;
+	  let ripbuf_frac_max_rev[r] := Uniform(0.7, 1);
+	};
+	} until sum {r in ripbuf_bmp} ripbuf_frac_min_rev[r] <= 1;
+	repeat {
+	  for {u in urban_bmp} {
+	    for {o in cost_type} {
+	         let urban_costs_rev[u,o] := urban_costs[u,o];
+	    };
+	    let urban_frac_min_rev[u] := 0;
+	    let urban_frac_max_rev[u] := Uniform(0.7,1); 
+	    for {c in comid_all} {
+	      if u == 'Porous_Pavement_w_underdrain'
+	        then {let urban_design_depth_rev[c,u] := Uniform(8.6, 13.6);}
+	        else {let urban_design_depth_rev[c,u] := Uniform(0.1,2);};
+	    };
+	  };
+	} until sum {u in urban_bmp} urban_frac_min_rev[u] <= 1;
+	 ",    
+  file = paste(
+    AMPLscriptsfolder, "STcommand_globalsens", 
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".amp", 
+    sep=""
+  ),
+  sep = "", 
+  append = T
+)
+
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      # First, write initialization loops to set all _rev parameters to zero
+      cat(
+        paste0(
+          "\n# Initialize annual baseloads_N", i, "_rev to zero\nfor {c in comid_N", 
+          i, 
+          "} {\n  for {l in loads_all} {\n    let baseloads_N",
+          i,
+          "_rev[c,l] := 0;\n  };\n  for {r in ripbuf_bmp} {\n    let riparianremoval_N",
+          i,
+          "_rev[c,r] := 0;\n  };\n  let riparianload_N",
+          i,
+          "_rev[c] := 0;\n};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+      
+      # Then write accumulation loop to sum seasonal loads with uncertainty
+      cat(
+        paste0(
+          "\n# Sum seasonal loads with uncertainty to get annual totals\nfor {c in comid_N", 
+          i, 
+          "} {\nfor {s in seasons} {\nfor {y in years} {\nfor {l in loads_all} {\n  let baseloads_N", 
+          i, 
+          "_rev[c,l] := baseloads_N",
+          i,
+          "_rev[c,l] + max(0, Normal(baseloads_N", 
+          i,
+          "[c,s,y,l], baseloads_N",
+          i,
+          "_se[c,s,y,l]));\n};\nfor {r in ripbuf_bmp} {\n  let riparianremoval_N",
+          i,
+          "_rev[c,r] := riparianremoval_N",
+          i,
+          "_rev[c,r] + max(0, Normal(riparianremoval_N",
+          i,
+          "[c,s,y,r], riparianremoval_N",
+          i,
+          "_se[c,s,y,r]));\n};\n  let riparianload_N",
+          i,
+          "_rev[c] := riparianload_N",
+          i,
+          "_rev[c] + max(0, Normal(riparianload_N",
+          i, 
+          "[c,s,y,'riparian'], riparianload_N",
+          i, 
+          "_se[c,s,y,'riparian']));\n};\n};\n};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+for {c in comid_all_N} {
+  for {a in ag_bmp} {
+    repeat {
+      let ag_effic_N_rev[c,a] := Normal(ag_effic_N[c,a], ag_effic_N_se[c,a]);
+    } until ag_effic_N_rev[c,a] <= 1;
+  };
+  for {p in point_c} {
+    let point_effic_N_rev[c,p] := Normal(point_effic_N[c,p], abs(point_effic_N[c,p]) * 0.2);
+  };
+  for {u in urban_bmp} {
+    repeat {
+      let urban_effic_N_rev[c,u] := Normal(urban_effic_N[c,u], urban_effic_N_se[c,u]);
+    } until urban_effic_N_rev[c,u] <= 1;
+  };
+};
+",    
+file = paste(
+  AMPLscriptsfolder, "STcommand_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp", 
+  sep=""
+),
+sep = "", 
+append = T
+  )
+}
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      # First, write initialization loops to set all _rev parameters to zero
+      cat(
+        paste0(
+          "\n# Initialize annual baseloads_P", i, "_rev to zero\nfor {c in comid_P", 
+          i, 
+          "} {\n  for {l in loads_all} {\n    let baseloads_P",
+          i,
+          "_rev[c,l] := 0;\n  };\n  for {r in ripbuf_bmp} {\n    let riparianremoval_P",
+          i,
+          "_rev[c,r] := 0;\n  };\n  let riparianload_P",
+          i,
+          "_rev[c] := 0;\n};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+      
+      # Then write accumulation loop to sum seasonal loads with uncertainty
+      cat(
+        paste0(
+          "\n# Sum seasonal loads with uncertainty to get annual totals\nfor {c in comid_P", 
+          i, 
+          "} {\nfor {s in seasons} {\nfor {y in years} {\nfor {l in loads_all: l != 'septic'} {\n  let baseloads_P", 
+          i, 
+          "_rev[c,l] := baseloads_P",
+          i,
+          "_rev[c,l] + max(0, Normal(baseloads_P", 
+          i,
+          "[c,s,y,l], baseloads_P",
+          i,
+          "_se[c,s,y,l]));\n};\nfor {r in ripbuf_bmp} {\n  let riparianremoval_P",
+          i,
+          "_rev[c,r] := riparianremoval_P",
+          i,
+          "_rev[c,r] + max(0, Normal(riparianremoval_P",
+          i,
+          "[c,s,y,r], riparianremoval_P",
+          i,
+          "_se[c,s,y,r]));\n};\n  let riparianload_P",
+          i,
+          "_rev[c] := riparianload_P",
+          i,
+          "_rev[c] + max(0, Normal(riparianload_P",
+          i, 
+          "[c,s,y,'riparian'], riparianload_P",
+          i, 
+          "_se[c,s,y,'riparian']));\n};\n};\n};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STcommand_globalsens", 
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".amp", 
+          sep=""
+        ),
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+for {c in comid_all_P} {
+  for {a in ag_bmp} {
+    repeat {
+      let ag_effic_P_rev[c,a] := Normal(ag_effic_P[c,a], ag_effic_P_se[c,a]);
+    } until ag_effic_P_rev[c,a] <=1;
+  };
+  for {p in point_c} {
+    let point_effic_P_rev[c,p] := Normal(point_effic_P[c,p], abs(point_effic_P[c,p]) * 0.2);
+  };
+  for {u in urban_bmp} {
+    repeat {
+      let urban_effic_P_rev[c,u] := Normal(urban_effic_P[c,u], urban_effic_P_se[c,u]);
+    } until urban_effic_P_rev[c,u] <= 1;
+  };
+};",
+file = paste(
+  AMPLscriptsfolder, "STcommand_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp", 
+  sep=""
+),
+sep = "\n",
+append = TRUE
+  )
+}
+
+cat(
+  "
+for {c in comid_all} {
+  	  for {u in urban_bmp} {
+	    repeat {
+	      let urban_bmp_implementationpotential_rev[c,u] :=  Normal(urban_bmp_implementationpotential[c,u], urban_bmp_implementationpotential_se[c,u]);
+	     } until 1 >= urban_bmp_implementationpotential_rev[c,u] >= 0;
+	  };
+  for {o in cost_type} {
+    repeat {
+      let point_costs_rev[c,o] := Normal(point_costs[c,o] * 1.15, point_costs[c,o] * 0.15);
+    } until point_costs_rev[c,o] >= 0;
+  };
+  
+  for {r in ripbuf_bmp} {
+  	 repeat {
+	      let unbuffered_banklength_rev[c,r] := Normal(unbuffered_banklength[c,r], unbuffered_banklength_se[c,r]);
+	     } until unbuffered_banklength_rev[c,r] >= 0;
+    repeat {
+      let ripbuf_costs_capital_rev[c,r] := Normal(ripbuf_costs_capital[c,r], ripbuf_costs_capital_se[c,r]);
+    } until ripbuf_costs_capital_rev[c,r] >= 0;
+    repeat { 
+      let ripbuf_costs_operations_rev[c,r] := Normal(ripbuf_costs_operations[c,r], ripbuf_costs_operations_se[c,r]);
+    } until ripbuf_costs_operations_rev[c,r] >= 0;
+  };
+  repeat {
+	    let total_banklength_rev[c] := Normal(total_banklength[c], 674.1);
+	   } until total_banklength_rev[c] >= max {r in ripbuf_bmp} unbuffered_banklength[c,r];
+  for {ar in area_sub} {
+    repeat {
+      let area_rev[c,ar] := Normal(area[c,ar], area_se[c,ar]);
+    } until area_rev[c,ar] >= 0;
+  };
+  
+  for {a in ag_bmp} {
+    repeat {
+      let ag_costs_capital_rev[c,a] := Normal(ag_costs_capital[c,a], ag_costs_capital_se[c,a]);
+    } until ag_costs_capital_rev[c,a] >= 0;
+    repeat {
+      let ag_costs_operations_rev[c,a] :=  Normal(ag_costs_operations[c,a], ag_costs_operations_se[c,a]);
+    } until ag_costs_operations_rev[c,a] >= 0;
+  };
+  
+  repeat {
+    let runoff_coeff_urban_rev[c,'urban'] := Normal(runoff_coeff_urban[c,'urban'], runoff_coeff_urban_se[c,'urban']);
+  } until 1 >= runoff_coeff_urban_rev[c,'urban'] >= 0;
+
+  repeat {
+    let urban_cost_adjustment_coef_rev[c] := Normal(urban_cost_adjustment_coef[c], urban_cost_adjustment_coef_se[c]);
+  } until urban_cost_adjustment_coef_rev[c] >= 0;
+  
+};
+
+solve;
+  option display_precision 10;
+  display solve_result_num, solve_result;
+  display cost.result;
+  display cost;
+  ",
+paste0(
+  "display ", 
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    paste(
+      foreach(i = 1:length(param_loads_lim_tn)) %do% {
+        paste0("loads_lim_N", i, "_rev")
+      },
+      collapse = ", "
+    )
+  }, 
+  if(
+    "TN" %in% user_specs_loadingtargets$TN_or_TP & 
+    "TP" %in% user_specs_loadingtargets$TN_or_TP
+  ) {paste(", ")},
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    paste(
+      foreach(i = 1:length(param_loads_lim_tp)) %do% {
+        paste0("loads_lim_P", i, "_rev")
+      },
+      collapse = ", "
+    )
+  },
+  ";"
+), 
+"
+  display urban_frac_min_rev, urban_frac_max_rev;
+  display ag_frac_min_rev, ag_frac_max_rev;
+  display ripbuf_frac_min_rev, ripbuf_frac_max_rev;
+  display urban_design_depth_rev;
+  option display_1col 10000000000;
+  option display_width 100000000000;
+  option omit_zero_rows 1;
+  option omit_zero_cols 1;
+  display sum {c in comid_all} (ps_coef[c] * point_dec[c]);
+  display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);
+  display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);
+  display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);
+
+};	
+",
+file = paste(
+  AMPLscriptsfolder, "STcommand_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp", 
+  sep=""
+),
+sep = "\n",
+append = TRUE
+)
+```
+
+## Write Global Sensitivity Model Script
+```{r write model script}
+
+
+write(
+  "#STmodel_seasonal.mod
+      \nset comid_all :=", 
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens", 
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),
+  append = F
+)
+cat(
+  "{",comid_vec_all,"};",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  sep = "", append = T
+)
+cat("\n",   file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),   sep = "", append = T)
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP & !any(grepl("NA", comid_vec_all_N))) {
+  cat(
+    paste0("\nset comid_all_N within comid_all := "),
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "",
+    append = T
+  )
+  cat(
+    "{",unique(comid_vec_all_N),"};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  sep = "", append = T
+  )
+  cat(
+    "\n",   file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  sep = "", append = T
+  )
+}
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP && 
+   exists("comid_vec_all_P") && 
+   length(comid_vec_all_P) > 0 && 
+   !any(is.na(comid_vec_all_P)) && 
+   !any(grepl("NA", comid_vec_all_P)) &&
+   !all(comid_vec_all_P == "") &&
+   !all(comid_vec_all_P == "''")) {
+  cat(
+    paste0("\nset comid_all_P within comid_all := "),
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "",
+    append = T
+  )
+  cat(
+    "{",unique(comid_vec_all_P),"};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  sep = "", append = T
+  )
+  cat(
+    "\n",   file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  sep = "", append = T
+  )
+} else {
+  # If no TP catchments, define an empty set (no members, not even '')
+  cat(
+    "\nset comid_all_P within comid_all := {};\n",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "",
+    append = T
+  )
+}
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP & !any(grepl("NA", comid_vec_all_N))) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      
+      cat(
+        paste0("\nset comid_N", i, " within comid_all_N := "),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "",
+        append = T
+      )
+      cat(
+        "{", comid_vec_N[[i]], "};",
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "",
+        append = T
+      )
+      cat(
+        "\n", 
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP && 
+     exists("comid_vec_all_P") && 
+     length(comid_vec_all_P) > 0 && 
+     !any(is.na(comid_vec_all_P)) && 
+     !any(grepl("NA", comid_vec_all_P)) &&
+     !all(comid_vec_all_P == "") &&
+     !all(comid_vec_all_P == "''")) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("\nset comid_P", i, " within comid_all_P := "),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "",
+        append = T
+      )
+      cat(
+          "{", comid_vec_P[[i]], "};",
+          file = paste(
+            AMPLscriptsfolder, "STmodel_globalsens",  
+            if(!default_parameters){paste0("_", parameter_tag)}, 
+            ".mod", 
+            sep=""
+          ),  
+          sep = "",
+          append = T
+        )
+        cat(
+          "\n",
+          file = paste(
+            AMPLscriptsfolder, "STmodel_globalsens",  
+            if(!default_parameters){paste0("_", parameter_tag)}, 
+            ".mod", 
+            sep=""
+          ),  
+          sep = "", 
+          append = T
+        )
+      }
+    } else {
+      # If no TP catchments, define an empty set (no members, not even '')
+      cat(
+        "\nset comid_P1 within comid_all_P := {};\n",
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "",
+        append = T
+      )
+    }
+)
+
+# Add seasons and years sets for seasonal model
+cat(
+  "\n\nset seasons := 1..4 ordered;",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+
+cat(
+  paste0("\n\nset years := 1..", length(model_years), " ordered;"),
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+
+cat(
+  "\n\nset urban_bmp :=",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+if(length(Urban_BMPs) > 0) {
+  cat(
+    "{",bmp_urban_vec_comma,"};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  ) 
+} else {
+  cat(
+    "{'none'};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  ) 
+}
+
+
+cat(
+  "\n\nset urban_pervbmp within urban_bmp :=",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+if(length(Urban_BMPs) > 0) {
+  if(!grepl("''", paste0(pervbmp_urban_vec_comma, collapse = ""))) {
+    cat(
+      "{",pervbmp_urban_vec_comma,"};",
+      file = paste(
+        AMPLscriptsfolder, "STmodel_globalsens",  
+        if(!default_parameters){paste0("_", parameter_tag)}, 
+        ".mod", 
+        sep=""
+      ),  
+      sep = "", 
+      append = T
+    )  
+  } else {
+    cat(
+      "{};",
+      file = paste(
+        AMPLscriptsfolder, "STmodel_globalsens",  
+        if(!default_parameters){paste0("_", parameter_tag)}, 
+        ".mod", 
+        sep=""
+      ),  
+      sep = "", 
+      append = T
+    )  
+  }
+} else {
+  cat(
+    "{'none'};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  )  
+}
+
+cat(
+  "\n\nset ag_bmp :=",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+if(length(Ag_BMPs) > 0) {
+  cat(
+    "{",bmp_ag_vec_comma,"};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  )
+} else {
+  cat(
+    "{'none'};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  )
+}
+
+
+cat(
+  "\n\nset septic_bmp :=
+{'none'};",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+
+cat(
+  "\n\nset ripbuf_bmp :=",
+  file = paste(
+    AMPLscriptsfolder, "STmodel_globalsens",  
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".mod", 
+    sep=""
+  ),  
+  sep = "\n", 
+  append = T
+)
+if(length(RiparianBuffer_BMPs) > 0) {
+  cat(
+    "{",bmp_ripbuf_vec_comma,"};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  ) 
+} else {
+  cat(
+    "{'none'};",
+    file = paste(
+      AMPLscriptsfolder, "STmodel_globalsens",  
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".mod", 
+      sep=""
+    ),  
+    sep = "", 
+    append = T
+  ) 
+}
+
+
+cat(
+  "\n\nset loads_all :=
+{'point', 'urban', 'ag', 'septic', 'storage', 'other'};
+  
+set area_sub :=
+{'urban', 'ag'};
+  
+set urban_imp :=
+{'urban'};
+  
+set urban_c :=
+{'urban'};
+  
+set point_c :=
+{'point'};
+  
+set cost_type :=
+{'capital', 'operations'};
+
+set coeff := 
+ {'coeff'};
+
+set loads_riparian := 
+ {'riparian'};
+
+set limits := 
+ {'limits'};
+
+set other_loads := 
+ {'other_load'};
+
+set septic_bmp_totals := 
+ {'total_parcels'};",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+)
+
+cat("\n",   file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),   sep = "", append = T)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0("param baseloads_N", i, " {comid_N", i, ", seasons, years, loads_all} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("param baseloads_P", i, " {comid_P", i, ", seasons, years, loads_all} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0("param riparianload_N", i, " {comid_N", i, ", seasons, years, loads_riparian} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("param riparianload_P", i, " {comid_P", i, ", seasons, years, loads_riparian} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+# Add transfer coefficients parameters for seasonal model
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0("param transfer_coefficients_N", i, " {comid_N", i, ", seasons, years, coeff};"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("param transfer_coefficients_P", i, " {comid_P", i, ", seasons, years, coeff};"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+# Add transfer coefficients _se parameters
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0("param transfer_coefficients_N", i, "_se {comid_N", i, ", seasons, years, coeff};"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("param transfer_coefficients_P", i, "_se {comid_P", i, ", seasons, years, coeff};"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat(
+  "\nparam area {comid_all,area_sub} >=0;
+param urban_bmp_implementationpotential {comid_all, urban_bmp} >= 0, <= 1;
+param septic_bmp_implementationpotential {comid_all_N, septic_bmp} >= 0;
+param septic_bmp_implementationtotal {comid_all_N, septic_bmp_totals} >= 0;
+param unbuffered_banklength {comid_all, ripbuf_bmp} >= 0;
+param total_banklength {c in comid_all} >= max {r in ripbuf_bmp} unbuffered_banklength[c,r];
+param total_banklength_se {c in comid_all};
+param total_banklength_rev {c in comid_all};
+param ag_costs_capital {comid_all,ag_bmp};
+param ag_costs_operations {comid_all,ag_bmp};
+param point_costs {comid_all,cost_type};
+param urban_costs {urban_bmp,cost_type};
+param ripbuf_costs_capital {comid_all, ripbuf_bmp};
+param ripbuf_costs_operations {comid_all, ripbuf_bmp};
+param runoff_coeff_urban {comid_all,urban_imp} >=0;
+param urban_cost_adjustment_coef {comid_all} >= 0;
+param septic_costs_capital {comid_all_N, septic_bmp} >= 0;
+param septic_costs_operations {comid_all_N, septic_bmp} >= 0;\n",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = T
+)  
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "\nparam ag_effic_N {comid_all_N ,ag_bmp};
+param point_effic_N {comid_all_N, point_c};
+param urban_effic_N {comid_all_N, urban_bmp};
+param septic_effic_N {comid_all_N, septic_bmp};\n",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+  )
+}
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "\nparam ag_effic_P {comid_all_P ,ag_bmp};
+param point_effic_P {comid_all_P, point_c};
+param urban_effic_P {comid_all_P, urban_bmp};\n",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+  )
+}
+
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0(
+          "param riparianremoval_N", 
+          i, 
+          " {c in comid_N", 
+          i, 
+          ", s in seasons, y in years, r in ripbuf_bmp};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0(
+          "param riparianremoval_P", 
+          i, 
+          " {c in comid_P", 
+          i, 
+          ", s in seasons, y in years, r in ripbuf_bmp};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0("param loads_lim_N", i, " {seasons, years, limits} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat("\n",   file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  append = T)
+
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0("param loads_lim_P", i, " {seasons, years, limits} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat("\n", file = paste(
+        AMPLscriptsfolder, "STmodel_globalsens",  
+        if(!default_parameters){paste0("_", parameter_tag)}, 
+        ".mod", 
+        sep=""
+      ), append = T)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0("param loads_lim_N", i, "_rev >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat("\n",   file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  append = T)
+
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0("param loads_lim_P", i, "_rev >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat("\n", file = paste(
+        AMPLscriptsfolder, "STmodel_globalsens",  
+        if(!default_parameters){paste0("_", parameter_tag)}, 
+        ".mod", 
+        sep=""
+      ), append = T)
+
+cat(
+"param agcost_frac >=0;
+param acfttoft3 >=0;
+param pcp >=0;
+param agBMP_minarea;
+
+param urban_frac_min {urban_bmp} >=0, <= 1;
+param urban_frac_max {u in urban_bmp} >= urban_frac_min[u], <= 1;
+param ag_frac_min {ag_bmp} >= 0, <= 1;
+param ag_frac_max {a in ag_bmp} >= ag_frac_min[a], <= 1;
+param ripbuf_frac_min {ripbuf_bmp} >= 0, <= 1;
+param ripbuf_frac_max {r in ripbuf_bmp} >= ripbuf_frac_min[r], <= 1;
+
+param urban_frac_min_rev {urban_bmp} >=0, <= 1;
+param urban_frac_max_rev {u in urban_bmp} >= urban_frac_min_rev[u], <= 1;
+param ag_frac_min_rev {ag_bmp} >= 0, <= 1;
+param ag_frac_max_rev {a in ag_bmp} >= ag_frac_min_rev[a], <= 1;
+param ripbuf_frac_min_rev {ripbuf_bmp} >= 0, <= 1;
+param ripbuf_frac_max_rev {r in ripbuf_bmp} >= ripbuf_frac_min_rev[r], <= 1;
+
+param urban_design_depth {c in comid_all, u in urban_bmp} >= 0;
+param urban_design_depth_rev {c in comid_all, u in urban_bmp} >= 0;
+  
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "", 
+append = T
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "\nparam baseloads_N", 
+          i, 
+          "_se {comid_N", 
+          i, 
+          ", seasons, years, loads_all} >= 0;"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "\nparam baseloads_P", 
+          i, 
+          "_se {comid_P", 
+          i, 
+          ", seasons, years, loads_all} >= 0;"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "\nparam riparianload_N", 
+          i, 
+          "_se {comid_N", 
+          i, 
+          ", seasons, years, loads_riparian} >= 0;"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "\nparam riparianload_P", 
+          i, 
+          "_se {comid_P", 
+          i, 
+          ", seasons, years, loads_riparian} >= 0;"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      write(
+        paste0(
+          "\nparam riparianremoval_N", 
+          i, 
+          "_se {c in comid_N", 
+          i, 
+          ", s in seasons, y in years, r in ripbuf_bmp};"
+        ), 
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      write(
+        paste0(
+          "\nparam riparianremoval_P", 
+          i, 
+          "_se {c in comid_P", 
+          i, 
+          ", s in seasons, y in years, r in ripbuf_bmp};"
+        ), 
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        append = T
+      )
+    }
+  }
+)
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+param ag_effic_N_se {comid_all_N ,ag_bmp} >= 0;
+param point_effic_N_se {comid_all_N, point_c} >= 0;
+param urban_effic_N_se {comid_all_N, urban_bmp} >= 0;
+param septic_effic_N_se {comid_all_N, septic_bmp} >= 0;",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+  )
+  
+}
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+param ag_effic_P_se {comid_all_P ,ag_bmp} >= 0;
+param point_effic_P_se {comid_all_P, point_c} >= 0;
+param urban_effic_P_se {comid_all_P, urban_bmp} >= 0;",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+  )
+}
+cat(
+  "
+param ripbuf_costs_capital_se {comid_all, ripbuf_bmp};
+param ripbuf_costs_operations_se {comid_all, ripbuf_bmp};
+
+param area_se {comid_all,area_sub} >=0;
+
+param ag_costs_capital_se {comid_all,ag_bmp};
+param ag_costs_operations_se {comid_all,ag_bmp};
+
+param point_costs_se {comid_all,cost_type};
+param urban_costs_se {urban_bmp,cost_type};
+
+param runoff_coeff_urban_se {comid_all,urban_imp} >=0;
+
+param urban_cost_adjustment_coef_se {comid_all} >= 0;
+param urban_bmp_implementationpotential_se {comid_all, urban_bmp} >= 0;
+param septic_bmp_implementationpotential_se {comid_all_N, septic_bmp} >= 0;
+param septic_bmp_implementationtotal_se {comid_all_N, septic_bmp_totals} >= 0;
+param septic_costs_capital_se {comid_all_N, septic_bmp} >= 0;
+param septic_costs_operations_se {comid_all_N, septic_bmp} >= 0;
+
+param unbuffered_banklength_se {comid_all, ripbuf_bmp} >= 0;
+
+
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "\nparam baseloads_N", 
+          i, 
+          "_rev {comid_N", 
+          i, 
+          ", loads_all};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "\nparam baseloads_P", 
+          i, 
+          "_rev {comid_P", 
+          i, 
+          ", loads_all};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "\nparam riparianload_N", 
+          i, 
+          "_rev {comid_N", 
+          i, 
+          "};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "\nparam riparianload_P", 
+          i, 
+          "_rev {comid_P", 
+          i, 
+          "};"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "", 
+        append = T
+      )
+    }
+  }
+)
+
+if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+    param ag_effic_N_rev {comid_all_N ,ag_bmp};
+param point_effic_N_rev {comid_all_N, point_c};
+param urban_effic_N_rev {comid_all_N, urban_bmp};
+param septic_effic_N_rev {comid_all_N, septic_bmp};
+param urban_bmp_implementationpotential_rev {comid_all, urban_bmp};
+param septic_bmp_implementationpotential_rev {comid_all_N, septic_bmp};
+param septic_bmp_implementationtotal_rev {comid_all_N, septic_bmp_totals};
+param unbuffered_banklength_rev {comid_all, ripbuf_bmp};
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+  )
+}
+
+if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+  cat(
+    "
+    param ag_effic_P_rev {comid_all_P ,ag_bmp};
+param point_effic_P_rev {comid_all_P, point_c};
+param urban_effic_P_rev {comid_all_P, urban_bmp};",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+  )
+}
+cat(
+  "
+param area_rev {comid_all,area_sub};
+param ag_costs_capital_rev {comid_all,ag_bmp};
+param ag_costs_operations_rev {comid_all,ag_bmp};
+param point_costs_rev {comid_all,cost_type};
+param urban_costs_rev {urban_bmp,cost_type};
+param ripbuf_costs_capital_rev {comid_all, ripbuf_bmp};
+param ripbuf_costs_operations_rev {comid_all, ripbuf_bmp};
+param runoff_coeff_urban_rev {comid_all, urban_imp};
+param urban_cost_adjustment_coef_rev {comid_all};
+param septic_costs_capital_rev {comid_all_N, septic_bmp};
+param septic_costs_operations_rev {comid_all_N, septic_bmp};
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      write(
+        paste0(
+          "\nparam riparianremoval_N", 
+          i, 
+          "_rev {c in comid_N", 
+          i, 
+          ", r in ripbuf_bmp};"
+        ), 
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      write(
+        paste0(
+          "\nparam riparianremoval_P", 
+          i, 
+          "_rev {c in comid_P", 
+          i, 
+          ", r in ripbuf_bmp};"
+        ), 
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        append = T
+      )
+    }
+  }
+)
+
+cat(
+  "
+param agcost_frac_rev >=0;
+
+param ps_coef {c in comid_all} := point_costs_rev[c,'capital'] + point_costs_rev[c,'operations'];
+param urban_coef {c in comid_all, u in urban_bmp} := acfttoft3 * pcp * urban_design_depth_rev[c,u] * runoff_coeff_urban_rev[c,'urban'] * area_rev[c,'urban'] * (urban_costs_rev[u,'capital'] + urban_costs_rev[u,'operations']) * urban_cost_adjustment_coef_rev[c];
+param ag_coef {c in comid_all, a in ag_bmp} := agcost_frac_rev * area_rev[c,'ag'] *  (ag_costs_capital_rev[c,a] + ag_costs_operations_rev[c,a]) ; 
+param ripbuf_coef {c in comid_all, r in ripbuf_bmp} := agcost_frac_rev * (ripbuf_costs_capital_rev[c, r] +  ripbuf_costs_operations_rev[c, r]);
+
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+)
+
+cat(
+  "
+var agBMP_bin {comid_all, ag_bmp} binary;
+var urbanBMP_bin {comid_all, urban_bmp} binary;
+var point_dec {comid_all} binary :=0;
+var urban_frac {c in comid_all, u in urban_bmp} >= urban_frac_min_rev[u] * urban_bmp_implementationpotential_rev[c, u]  <= urban_frac_max_rev[u] * urban_bmp_implementationpotential_rev[c, u] :=0;
+var ag_frac {comid_all, a in ag_bmp} >= ag_frac_min_rev[a] <= ag_frac_max_rev[a] :=0;
+var ripbuf_length {c in comid_all, r in ripbuf_bmp} >= 0 <= unbuffered_banklength_rev[c, r] * ripbuf_frac_max_rev[r] := 0;
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n",
+append = TRUE
+)
+
+# Add seasonal inc_storage_load variables
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_N)) %do% {
+      cat(
+        paste0("var inc_storage_load_N", i, "{c in comid_N", i, ", s in seasons, y in years} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(comid_vec_P)) %do% {
+      cat(
+        paste0("var inc_storage_load_P", i, "{c in comid_P", i, ", s in seasons, y in years} >= 0;"),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n",
+        append = T
+      )
+    }
+  }
+)
+
+cat(
+  "
+minimize cost: sum {c in comid_all} (ps_coef[c] * point_dec[c]) + 
+sum {c in comid_all, u in urban_bmp} (urban_coef[c,u] * urban_frac[c,u]) + 
+sum {c in comid_all, a in ag_bmp} (ag_coef[c,a] * ag_frac[c,a]) +
+sum {c in comid_all, r in ripbuf_bmp} (ripbuf_coef[c, r] * ripbuf_length[c, r]);
+  \n",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "subject to total_loads_N", i, ":\n",
+          "sum {c in comid_N", i, "} (baseloads_N", i, 
+          "_rev[c,'ag'] * (1 - sum {a in ag_bmp}(ag_effic_N_rev[c,a] * ag_frac[c,a])))", 
+          " + \n",
+          "sum {c in comid_N", i, "} (baseloads_N", i, 
+          "_rev[c,'urban'] * (1 - sum {u in urban_bmp}(urban_effic_N_rev[c,u] *",
+          " urban_frac[c,u]))) + \n",
+          "sum {c in comid_N", i, "} (baseloads_N", i, "_rev[c,'point'] * (1 -",
+          " (point_effic_N_rev[c,'point'] * point_dec[c]))) - \n",
+          "sum {c in comid_N", i, ", r in ripbuf_bmp} (ripbuf_length[c, r] *",
+          " riparianremoval_N", i, "_rev[c, r]) <= loads_lim_N", i, "_rev; \n"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "subject to total_loads_P", i, ":\n",
+          "sum {c in comid_P", i, "} (baseloads_P", i, 
+          "_rev[c,'ag'] * (1 - sum {a in ag_bmp}(ag_effic_P_rev[c,a] * ",
+          "ag_frac[c,a]))) + \n",
+          "sum {c in comid_P", i, "} (baseloads_P", i,
+          "_rev[c,'urban'] * (1 - sum {u in urban_bmp}(urban_effic_P_rev[c,u] *", 
+          "urban_frac[c,u]))) + \n",
+          "sum {c in comid_P", i, "} (baseloads_P", i, "_rev[c,'point'] * (1 -",
+          "(point_effic_P_rev[c,'point'] * point_dec[c])))  - \n",
+          "sum {c in comid_P", i, ", r in ripbuf_bmp} (ripbuf_length[c, r] *",
+          "riparianremoval_P", i, "_rev[c, r]) <= loads_lim_P", i, "_rev; \n"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TN" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tn)) %do% {
+      cat(
+        paste0(
+          "subject to riparian_loads_N", i, " {c in comid_N", i, "}:\n",
+          "sum {r in ripbuf_bmp} (ripbuf_length[c, r] * riparianremoval_N", i, 
+          "_rev[c, r]) <= riparianload_N", i, "_rev[c]; \n"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n", 
+        append = T
+      )
+    }
+  }
+)
+
+invisible(
+  if("TP" %in% user_specs_loadingtargets$TN_or_TP) {
+    foreach(i = 1:length(param_loads_lim_tp)) %do% {
+      cat(
+        paste0(
+          "subject to riparian_loads_P", i, " {c in comid_P", i, "}:\n",
+          "sum {r in ripbuf_bmp} (ripbuf_length[c, r] * riparianremoval_P", i, 
+          "_rev[c, r]) <= riparianload_P", i, "_rev[c]; \n"
+        ),
+        file = paste(
+          AMPLscriptsfolder, "STmodel_globalsens",  
+          if(!default_parameters){paste0("_", parameter_tag)}, 
+          ".mod", 
+          sep=""
+        ),  
+        sep = "\n", 
+        append = T
+      )
+    }
+  }
+)
+
+cat(
+  "subject to ag_treat_min {c in comid_all, a in ag_bmp}:
+ag_frac[c,a] * area_rev[c,'ag'] >= agBMP_minarea * agBMP_bin[c,a];
+  
+subject to ag_frac_const {c in comid_all, a in ag_bmp}:
+ag_frac[c,a] <= agBMP_bin[c,a];
+  
+subject to urban_frac_const {c in comid_all, u in urban_bmp}:
+urban_frac[c,u] <= urbanBMP_bin[c,u];
+
+subject to ag_frac_limit {c in comid_all}: 
+sum {a in ag_bmp} ag_frac[c,a] <= 1;
+# prevents multiple BMPs being implemented on the same area
+
+subject to urban_frac_limit {c in comid_all}: 
+sum {u in urban_bmp} urban_frac[c,u] <= 1;
+# prevents multiple BMPs being implemented on the same area
+
+subject to total_banks {c in comid_all}:
+sum {r in ripbuf_bmp} ripbuf_length[c,r] <= max {r in ripbuf_bmp} 
+   unbuffered_banklength_rev[c,r];
+  
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+)
+
+if(!grepl("''", paste0(pervbmp_urban_vec_comma, collapse = ""))){
+  cat(
+    "
+subject to roads_and_parkinglots {c in comid_all}:
+sum{up in urban_pervbmp} urban_frac[c, up] <= max {up in urban_pervbmp} 
+   urban_bmp_implementationpotential_rev[c,up];
+",
+file = paste(
+  AMPLscriptsfolder, "STmodel_globalsens",  
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod", 
+  sep=""
+),  
+sep = "\n", 
+append = T
+  )
+}
+
+```
+
+## Write Global Sensitivity Data Script
+```{r write data AMPL file}
+
+orig.dat <- read.table(
+  file = paste(OutPath, "STdata_dynamic_uncertainty.dat", sep=""), 
+  header = FALSE,
+  sep = "\n",
+  quote = ""
+)
+
+writeLines(
+  orig.dat$V1, 
+  con = paste(
+    AMPLscriptsfolder, "STdata_globalsens", 
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".dat", 
+    sep=""
+  )
+)
+
+# Write urban_bmp_implementationpotential_se parameter
+
+if(length(Urban_BMPs) > 0) {
+  # Write parameter header on one line
+  cat(
+    "\nparam urban_bmp_implementationpotential_se : ",
+    paste(paste0("'", Urban_BMPs, "'"), collapse = "    "),
+    ":=\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE,
+    sep = ""
+  )
+  
+  # Prepare data with all BMPs columns and filter to model catchments
+  # comid_vec_all_N and comid_vec_all_P already include quotes, so strip them for comparison
+  model_comids_raw <- unique(c(
+    if(exists("comid_vec_all_N")) {comid_vec_all_N} else {NULL},
+    if(exists("comid_vec_all_P") && !any(grepl("NA", comid_vec_all_P))) {comid_vec_all_P} else {NULL}
+  ))
+  
+  # Remove quotes and commas from comid vectors
+  model_comids <- gsub("'|,", "", model_comids_raw)
+  
+  data_to_write <- urban_bmp_implementationpotential_dat_se %>% 
+    mutate(comid = as.character(gsub("'", "", comid_form))) %>%
+    filter(comid %in% model_comids) %>%
+    select(comid_form, contains("_se")) %>%
+    rename_with(.cols = contains("_se"), .fn = ~gsub("_se", "", .))
+  
+  # Ensure all Urban_BMPs columns exist in correct order
+  for (bmp in Urban_BMPs) {
+    if (!bmp %in% names(data_to_write)) {
+      data_to_write[[bmp]] <- 0
+    }
+  }
+  
+  # Write data with proper tab separation
+  write.table(
+    data_to_write %>% select(comid_form, all_of(Urban_BMPs)),
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE,
+    sep = "\t",
+    row.names = FALSE,
+    col.names = FALSE,
+    na = "0",
+    quote = FALSE
+  )
+  
+  cat(
+    ";\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE
+  )
+} else {
+  cat(
+    "\nparam urban_bmp_implementationpotential_se: 'none' :=\n;\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE
+  )
+}
+
+# Write unbuffered_banklength_se parameter
+
+if(length(RiparianBuffer_BMPs) > 0) {
+  # Write parameter header on one line
+  cat(
+    "\nparam unbuffered_banklength_se : ",
+    paste(paste0("'", RiparianBuffer_BMPs, "'"), collapse = "    "),
+    ":=\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE,
+    sep = ""
+  )
+  
+  # Prepare data with all riparian BMPs columns and filter to model catchments
+  # comid_vec_all_N and comid_vec_all_P already include quotes, so strip them for comparison
+  model_comids_raw <- unique(c(
+    if(exists("comid_vec_all_N")) {comid_vec_all_N} else {NULL},
+    if(exists("comid_vec_all_P") && !any(grepl("NA", comid_vec_all_P))) {comid_vec_all_P} else {NULL}
+  ))
+  
+  # Remove quotes and commas from comid vectors
+  model_comids <- gsub("'|,", "", model_comids_raw)
+  
+  # Filter to model catchments and select columns
+  data_to_write <- streambanklength_available_dat_se %>%
+    mutate(comid = as.character(gsub("'", "", comid_form))) %>%
+    filter(comid %in% model_comids) %>%
+    select(comid_form, any_of(RiparianBuffer_BMPs))
+  
+  # Write data with proper tab separation
+  write.table(
+    data_to_write,
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE,
+    sep = "\t",
+    row.names = FALSE,
+    col.names = FALSE,
+    na = "0",
+    quote = FALSE
+  )
+  
+  cat(
+    ";\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE
+  )
+} else {
+  cat(
+    "\nparam unbuffered_banklength_se: 'none' :=\n;\n",
+    file = paste0(
+      AMPLscriptsfolder, "STdata_globalsens", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".dat"
+    ),
+    append = TRUE
+  )
+}
+
+```
+
+## Batch Processing Functions
+```{r batch processing functions}
+# Function to create batch command files
+# Function to create batch command files for WWTP analysis (preserves point_dec display)
+create_wwtp_batch_command_file <- function(batch_num, start_bootstrap, end_bootstrap, base_command_file) {
+  # Read the base command file (which includes "display point_dec;")
+  base_content <- readLines(base_command_file)
+  
+  # Replace the bootstrap range
+  bootstrap_line_idx <- grep("let Bootstraps := ", base_content)
+  if(length(bootstrap_line_idx) > 0) {
+    base_content[bootstrap_line_idx] <- paste0("let Bootstraps := ", start_bootstrap, " .. ", end_bootstrap, " by 1;")
+  }
+  
+  # This ensures each batch generates different random parameter values
+  display_line_idx <- grep("display Bootstraps;", base_content)
+  if(length(display_line_idx) > 0) {
+    # Insert random seed setting after the display Bootstraps line
+    random_seed_line <- paste0("# Set unique random seed for WWTP batch ", batch_num)
+    seed_value <- as.integer(Sys.time()) + batch_num * 1000 + start_bootstrap
+    seed_command <- paste0("option randseed ", seed_value, ";")
+    
+    # Insert the seed commands after display Bootstraps
+    insert_pos <- display_line_idx[1]
+    before_lines <- base_content[1:insert_pos]
+    after_lines <- base_content[(insert_pos + 1):length(base_content)]
+    
+    base_content <- c(
+      before_lines,
+      "",
+      random_seed_line, 
+      seed_command,
+      "",
+      after_lines
+    )
+  }
+  
+  # Create batch-specific filename
+  batch_command_file <- gsub("\\.amp$", paste0("_batch", batch_num, ".amp"), base_command_file)
+  
+  # Write the modified content
+  writeLines(base_content, batch_command_file)
+  
+  cat("Created WWTP batch command file:", basename(batch_command_file), "\n")
+  cat("  Bootstrap range:", start_bootstrap, "to", end_bootstrap, "\n")
+  cat("  Random seed:", seed_value, "\n")
+  cat("  Preserved point_dec display command\n")
+  
+  return(batch_command_file)
+}
+
+# Function to create batch command files for main analysis
+create_batch_command_file <- function(batch_num, start_bootstrap, end_bootstrap, base_command_file) {
+  # Read the base command file
+  base_content <- readLines(base_command_file)
+  
+  # Replace the bootstrap range
+  bootstrap_line_idx <- grep("let Bootstraps := ", base_content)
+  if(length(bootstrap_line_idx) > 0) {
+    base_content[bootstrap_line_idx] <- paste0("let Bootstraps := ", start_bootstrap, " .. ", end_bootstrap, " by 1;")
+  }
+  
+  # This ensures each batch generates different random parameter values
+  display_line_idx <- grep("display Bootstraps;", base_content)
+  if(length(display_line_idx) > 0) {
+    # Insert random seed setting after the display Bootstraps line
+    random_seed_line <- paste0("# Set unique random seed for batch ", batch_num)
+    seed_value <- as.integer(Sys.time()) + batch_num * 1000 + start_bootstrap
+    seed_command <- paste0("option randseed ", seed_value, ";")
+    
+    # Insert the seed commands after display Bootstraps
+    insert_pos <- display_line_idx[1]
+    before_lines <- base_content[1:insert_pos]
+    after_lines <- base_content[(insert_pos + 1):length(base_content)]
+    
+    base_content <- c(
+      before_lines,
+      "",
+      random_seed_line, 
+      seed_command,
+      "",
+      after_lines
+    )
+  }
+  
+  # Implement truncation improvements: add compact output format after solve command
+  solve_idx <- grep("solve;", base_content)
+  if(length(solve_idx) > 0) {
+    # Remove any existing verbose output after solve
+    end_loop_idx <- grep("};", base_content)
+    end_loop_idx <- end_loop_idx[end_loop_idx > solve_idx[1]]
+    if(length(end_loop_idx) > 0) {
+      # Keep everything before solve and after the first }; that closes the bootstrap loop
+      first_part <- base_content[1:solve_idx[1]]
+      last_part <- base_content[end_loop_idx[1]:length(base_content)]
+      
+      # Add improved compact output between solve and loop end
+      improved_output <- c(
+        "",
+        "# Essential outputs for post-processing - compact format to avoid truncation",
+        'printf "Bootstrap %d: ", b;',
+        "if solve_result_num >= 0 and solve_result_num <= 99 then {",
+        '  printf "SOLVED, Cost = %g\\n", cost;',
+        "  # Display solve status and cost in compact format",
+        "  display solve_result_num, solve_result;",
+        "  display cost;",
+        "  ",
+        "  # Display loading limits used for this bootstrap",
+        "  display loads_lim_N1_rev, loads_lim_P1_rev;",
+        "  ",
+        "  # Display BMP spending results - essential for BMP analysis plots",
+        "  option omit_zero_rows 1;",
+        "  option omit_zero_cols 1;",
+        "  display sum {c in comid_all} (ps_coef[c] * point_dec[c]);",
+        "  display {u in urban_bmp} sum {c in comid_all} (urban_coef[c,u] * urban_frac[c,u]);",
+        "  display {a in ag_bmp} sum {c in comid_all} (ag_coef[c,a] * ag_frac[c,a]);",
+        "  display {r in ripbuf_bmp} sum {c in comid_all} (ripbuf_coef[c, r] * ripbuf_length[c, r]);",
+        "  ",
+        "  # Display individual WWTP facilities selected (for WWTP analysis)",
+        "  display point_dec;",
+        "  ",
+        "  # Display BMP implementation parameters - needed for sensitivity analysis",
+        "  display urban_frac_max_rev;",
+        "  display ripbuf_frac_max_rev;",
+        "  display urban_design_depth_rev;",
+        "  ",
+        "} else {",
+        '  printf "FAILED, Result = %s\\n", solve_result;',
+        "  display solve_result_num, solve_result;",
+        "}"
+      )
+      
+      # Combine all parts
+      base_content <- c(first_part, improved_output, last_part)
+    }
+  }
+  
+  # Add summary output at the end before final closing
+  summary_idx <- length(base_content)
+  summary_output <- c(
+    "",
+    "# Summary output after all bootstraps complete",
+    'printf "\\n=== GLOBAL SENSITIVITY ANALYSIS COMPLETE ===\\n";',
+    paste0('printf "Batch ', batch_num, ' (bootstraps ', start_bootstrap, '-', end_bootstrap, ') completed successfully.\\n";'),
+    paste0('printf "Random seed used: ', seed_value, '\\n";'),
+    "",
+    "# Optional: Add any final summary statistics or outputs here",
+    "# Examples:",
+    '# display "Final summary statistics";',
+    "# option display_precision 6;"
+  )
+  
+  # Insert summary before the final line
+  if(length(base_content) > 1) {
+    base_content <- c(base_content[1:(summary_idx-1)], summary_output, base_content[summary_idx])
+  } else {
+    base_content <- c(base_content, summary_output)
+  }
+  
+  # Create batch-specific filename
+  batch_command_file <- gsub("\\.amp$", paste0("_batch", batch_num, ".amp"), base_command_file)
+  
+  # Write the modified content
+  writeLines(base_content, batch_command_file)
+  
+  cat("Created batch", batch_num, "command file with unique random seed:", seed_value, "\n")
+  
+  return(batch_command_file)
+}
+
+# Function to submit a single batch to NEOS
+submit_batch_to_neos <- function(batch_num, batch_command_file, model_file, data_file, email, parameter_tag) {
+  cat("Submitting batch", batch_num, "to NEOS...\n")
+  
+  # Get solver template
+  tmp <- my_NgetSolverTemplate(
+    category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+  )
+  
+  # Read file contents
+  modc <- paste(paste(readLines(model_file), collapse = "\n"), "\n")
+  datc <- paste(paste(readLines(data_file), collapse = "\n"), "\n")
+  comc <- paste(paste(readLines(batch_command_file), collapse = "\n"), "\n")
+  
+  # Create comments
+  batch_start <- (batch_num - 1) * batch_size + 1
+  batch_end <- min(batch_num * batch_size, nbootstraps)
+  
+  comments <- paste(
+    "Global sensitivity batch", batch_num,
+    if(!default_parameters){paste0("(subtext ", parameter_tag, ")")},
+    "- bootstraps", batch_start, "to", batch_end
+  )
+  
+  # Create argument list
+  argslist <- list(
+    model = modc, data = datc, commands = comc, comments = comments, email = email
+  )
+  
+  # Create XML string and submit
+  xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
+  job.xml.text <- NsubmitJob(xmlstring = xmls, user = "rneos", interface = "", id = 0)
+  
+  return(job.xml.text)
+}
+
+# Function to combine batch results
+combine_batch_results <- function(batch_results, output_file) {
+  cat("Combining batch results...\n")
+  
+  combined_content <- c()
+  
+  for(i in 1:length(batch_results)) {
+    if(!is.null(batch_results[[i]])) {
+      batch_content <- batch_results[[i]]@ans
+      
+      # For first batch, include everything up to the batch completion message
+      if(i == 1) {
+        # Find the batch completion message to avoid including it
+        batch_complete_idx <- grep("=== GLOBAL SENSITIVITY ANALYSIS COMPLETE ===", batch_content)
+        if(length(batch_complete_idx) > 0) {
+          combined_content <- batch_content[1:(batch_complete_idx[1]-1)]
+        } else {
+          combined_content <- batch_content
+        }
+      } else {
+        # For subsequent batches, find bootstrap results and skip header
+        # Look for either "Bootstrap iteration" (old format) or "Bootstrap N:" (new compact format)
+        bootstrap_start <- grep("Bootstrap (iteration |[0-9]+:)", batch_content)
+        batch_complete_idx <- grep("=== GLOBAL SENSITIVITY ANALYSIS COMPLETE ===", batch_content)
+        
+        if(length(bootstrap_start) > 0) {
+          # Determine end point (exclude batch completion message)
+          end_idx <- if(length(batch_complete_idx) > 0) {
+            batch_complete_idx[1] - 1
+          } else {
+            length(batch_content)
+          }
+          
+          # Append bootstrap results from this batch
+          batch_results_section <- batch_content[bootstrap_start[1]:end_idx]
+          combined_content <- c(combined_content, batch_results_section)
+        }
+      }
+    } else {
+      cat("Warning: Batch", i, "returned NULL result\n")
+    }
+  }
+  
+  # Add final completion message for the entire analysis
+  final_summary <- c(
+    "",
+    "=== GLOBAL SENSITIVITY ANALYSIS COMPLETE ===",
+    paste0("All ", length(batch_results), " batches completed successfully."),
+    paste0("Total bootstraps processed: ", nbootstraps),
+    "",
+    "# Combined results from all batches",
+    "# Ready for post-processing analysis"
+  )
+  
+  combined_content <- c(combined_content, final_summary)
+  
+  # Write combined results
+  write.table(
+    combined_content,
+    file = output_file,
+    row.names = FALSE,
+    col.names = FALSE,
+    quote = FALSE
+  )
+  
+  cat("Combined results written to:", output_file, "\n")
+  cat("Total lines in combined file:", length(combined_content), "\n")
+}
+```
+
+## Send AMPL jobs to NEOS - Batch Processing Version
+
+At this point the Global Sensitivity Analysis would also work if users prefer to manually submit and retrieve jobs from NEOS.
+WARNING: Large LIS watersheds produce result files too big to import via API. If the automatic AMPL submission fails, try submitting manually via the webpage.
+```{r send AMPL scripts to solver}
+
+# Set up file paths
+modf <- paste0(
+  AMPLscriptsfolder, 
+  "STmodel_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod"
+)
+datf <- paste0(
+  AMPLscriptsfolder, 
+  "STdata_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".dat"
+)
+base_comf <- paste0(
+  AMPLscriptsfolder, 
+  "STcommand_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp"
+)
+
+# Email for NEOS submissions
+email <- "56407@icf.com"
+
+if(use_batch_processing && n_batches > 1) {
+  cat("=== BATCH PROCESSING MODE ===\n")
+  cat("Submitting", n_batches, "batches to NEOS...\n")
+  
+  # Initialize storage for batch jobs and results
+  batch_jobs <- list()
+  batch_results <- list()
+  
+  # Submit all batches
+  for(batch_num in 1:n_batches) {
+    batch_start <- (batch_num - 1) * batch_size + 1
+    batch_end <- min(batch_num * batch_size, nbootstraps)
+    
+    cat("Preparing batch", batch_num, ": bootstraps", batch_start, "to", batch_end, "\n")
+    
+    # Create batch-specific command file
+    batch_command_file <- create_batch_command_file(
+      batch_num = batch_num,
+      start_bootstrap = batch_start,
+      end_bootstrap = batch_end,
+      base_command_file = base_comf
+    )
+    
+    # Submit batch to NEOS
+    batch_job <- submit_batch_to_neos(
+      batch_num = batch_num,
+      batch_command_file = batch_command_file,
+      model_file = modf,
+      data_file = datf,
+      email = email,
+      parameter_tag = parameter_tag
+    )
+    
+    batch_jobs[[batch_num]] <- batch_job
+    
+    # Add delay between submissions to avoid overwhelming NEOS
+    if(batch_num < n_batches) {
+      Sys.sleep(10)
+    }
+  }
+  
+  # Retrieve results for all batches
+  cat("\nRetrieving results from NEOS...\n")
+  for(batch_num in 1:n_batches) {
+    cat("Retrieving results for batch", batch_num, "...\n")
+    
+    # Get results
+    batch_result <- NgetFinalResults(obj = batch_jobs[[batch_num]], convert = TRUE)
+    batch_results[[batch_num]] <- batch_result
+    
+    # Save individual batch result for debugging
+    batch_output_file <- paste0(
+      NEOSresults,
+      "NEOS_result_globalsens_batch", batch_num,
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".txt"
+    )
+    
+    write.table(
+      batch_result@ans,
+      file = batch_output_file,
+      row.names = FALSE,
+      col.names = FALSE,
+      quote = FALSE
+    )
+    
+    cat("Batch", batch_num, "results saved to:", batch_output_file, "\n")
+  }
+  
+  # Combine all batch results
+  final_output_file <- paste0(
+    NEOSresults,
+    "NEOS_result_globalsens",
+    nbootstraps,
+    "bs", 
+    if(!default_parameters){paste0("_", parameter_tag)}, 
+    ".txt"
+  )
+  
+  combine_batch_results(batch_results, final_output_file)
+  
+  cat("\n=== BATCH PROCESSING COMPLETE ===\n")
+  cat("Final combined results saved to:", final_output_file, "\n")
+  
+} else {
+  cat("=== SINGLE JOB MODE ===\n")
+  
+  # Original single-job approach
+  tmp <-my_NgetSolverTemplate(
+    category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+  )
+  
+  comments <- paste(
+    "global sensitivity test",
+    if(!default_parameters){paste0("(subtext ", parameter_tag, ")")}, 
+    "with", 
+    nbootstraps,
+    "bootstraps."
+  )
+  
+  ## import file contents
+  modc <- paste(paste(readLines(modf), collapse = "\n"), "\n")
+  datc <- paste(paste(readLines(datf), collapse = "\n"), "\n")
+  comc <- paste(paste(readLines(base_comf), collapse = "\n"), "\n")
+  
+  ## create list object
+  argslist <- list(
+    model = modc, data = datc, commands = comc, comments = comments, email = email
+  )
+  ## create XML string
+  xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
+  
+  ## Submit job
+  job.xml.text <- NsubmitJob(
+    xmlstring = xmls, user = "rneos", interface = "", id = 0
+  )
+  
+  ## Retrieve results
+  resultfile <- NgetFinalResults(obj = job.xml.text, convert = TRUE)
+  write.table(
+    resultfile@ans, 
+    file = paste0(
+      NEOSresults,
+      "NEOS_result_globalsens",
+      nbootstraps,
+      "bs", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      ".txt"
+    ),
+    row.names = FALSE,
+    col.names = FALSE,
+    quote = FALSE
+  )
+  
+  cat("Single job results saved\n")
+}
+
+# Completion notification
+if(use_batch_processing && n_batches > 1) {
+  beepr::beep(3)  # Different beep for batch completion
+  cat("\n BATCH PROCESSING COMPLETED! \n")
+  cat("All", n_batches, "batches have been processed and combined.\n")
+} else {
+  beepr::beep(2)  # Original beep for single job
+  cat("\n SINGLE JOB COMPLETED! \n")
+}
+```
+
+
+## Parse Global Sensitivity Results
+```{r load file}
+
+# Helper function to determine bootstrap number for BMP spending data
+determine_bmp_bootstrap_number <- function(i, dat, results_per_bootstrap = 4) {
+  if("batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+    # For batch processing, calculate based on position and batch offset
+    # This is a simplified approach - adjust based on your specific data structure
+    if(i <= nrow(dat) && !is.na(dat$batch_num[i]) && !is.na(dat$bootstrap_offset[i])) {
+      # Find BMP descriptions that match this index
+      batch_info <- dat[i, ]
+      
+      # Calculate position within batch and add offset
+      position_in_batch <- ((i - 1) %% results_per_bootstrap) + 1
+      bootstrap_num <- batch_info$bootstrap_offset + position_in_batch
+    } else {
+      bootstrap_num <- i  # Fallback
+    }
+  } else {
+    # For single file processing, use simple indexing
+    bootstrap_num <- i
+  }
+  
+  return(bootstrap_num)
+}
+
+# Function to load and combine batch result files
+load_batch_results <- function(base_filename, n_bootstraps, default_parameters = TRUE, parameter_tag = "") {
+  # First, check if the final combined file exists (created by combine_batch_results)
+  combined_file <- paste0(NEOSresults, base_filename)
+  
+  if(file.exists(combined_file)) {
+    cat("[SUCCESS] Found combined result file:", basename(combined_file), "\n")
+    cat("  Loading pre-combined batch results...\n")
+    
+    # Check if this is a raw NEOS file or a cleaned combined file
+    first_lines <- readLines(combined_file, n = 5)
+    is_raw_neos <- any(grepl("You are using the solver", first_lines))
+    
+    combined_data <- fread(
+      combined_file,
+      fill = TRUE,
+      skip = if(is_raw_neos) 0 else 2,  # Don't skip lines for raw NEOS files
+      sep = "\t", 
+      sep2 = "\n",
+      quote = ""  # Disable quote handling to avoid issues with NEOS output
+    ) %>%
+      rename(V1 = 1)
+    
+    return(combined_data)
+  }
+  
+  # If no combined file, check for individual batch files
+  # Create precise pattern to match only the specific batch files for this analysis
+  # Note: batch files are named without the "1000bs" suffix, so we need to remove it
+  base_name_without_ext <- gsub("\\.txt$", "", base_filename)
+  
+  # Remove bootstrap count suffix (e.g., "1000bs") if present
+  base_name_for_batches <- gsub("[0-9]+bs$", "", base_name_without_ext)
+  
+  # Try two patterns: with and without bootstrap suffix
+  batch_pattern1 <- paste0("^", base_name_without_ext, "_batch[0-9]+\\.txt$")
+  batch_pattern2 <- paste0("^", base_name_for_batches, "_batch[0-9]+\\.txt$")
+  
+  # Get all files in the directory first for debugging
+  all_files <- list.files(path = NEOSresults, pattern = "\\.txt$", full.names = FALSE)
+  
+  # Try both patterns
+  batch_files <- list.files(
+    path = NEOSresults,
+    pattern = batch_pattern1,
+    full.names = TRUE
+  )
+  
+  if(length(batch_files) == 0) {
+    # Try without bootstrap suffix
+    batch_files <- list.files(
+      path = NEOSresults,
+      pattern = batch_pattern2,
+      full.names = TRUE
+    )
+    batch_pattern_used <- batch_pattern2
+  } else {
+    batch_pattern_used <- batch_pattern1
+  }
+  
+  cat("Looking for batch files with patterns:\n")
+  cat("  Pattern 1 (with bs suffix):", batch_pattern1, "\n")
+  cat("  Pattern 2 (without bs suffix):", batch_pattern2, "\n")
+  cat("  Using pattern:", batch_pattern_used, "\n")
+  cat("Base filename (without extension):", base_name_without_ext, "\n")
+  cat("In directory:", NEOSresults, "\n")
+  cat("Total .txt files in directory:", length(all_files), "\n")
+  
+  if(length(batch_files) > 0) {
+    cat("[SUCCESS] Found", length(batch_files), "matching batch result files:\n")
+    for(bf in basename(batch_files)) {
+      cat("  -", bf, "\n")
+    }
+    cat("  Combining batch files in sequential order...\n")
+    
+    # Sort batch files by batch number to ensure correct order
+    batch_numbers <- as.numeric(gsub(".*_batch([0-9]+)\\.txt$", "\\1", basename(batch_files)))
+    sorted_indices <- order(batch_numbers)
+    batch_files <- batch_files[sorted_indices]
+    
+    # Load and combine all batch files
+    all_batch_data <- list()
+    
+    for(i in seq_along(batch_files)) {
+      cat("  Loading batch file:", basename(batch_files[i]), "\n")
+      
+      # Check if this is a raw NEOS file
+      first_lines <- readLines(batch_files[i], n = 5)
+      is_raw_neos <- any(grepl("You are using the solver", first_lines))
+      
+      batch_data <- fread(
+        batch_files[i],
+        fill = TRUE,
+        skip = if(is_raw_neos) 0 else 2,
+        sep = "\t", 
+        sep2 = "\n",
+        quote = ""  # Disable quote handling to avoid issues with NEOS output
+      ) %>%
+        rename(V1 = 1)
+      
+      all_batch_data[[i]] <- batch_data
+    }
+    
+    # Combine all batch data
+    combined_data <- do.call(rbind, all_batch_data)
+
+    # Save combined data to the NEOSresults folder
+    combined_output_file <- paste0(NEOSresults, base_filename)
+    write.table(
+      combined_data,
+      file = combined_output_file,
+      row.names = FALSE,
+      col.names = FALSE,
+      quote = FALSE
+    )
+    
+    cat("  Successfully combined", length(batch_files), "batch files into single dataset.\n")
+    cat("  Combined file saved to:", combined_output_file, "\n")
+    return(combined_data)
+    
+  } else {
+    # Fallback to original single file approach
+    single_file <- paste0(NEOSresults, base_filename)
+    
+    if(file.exists(single_file)) {
+      cat("[SUCCESS] No batch files found. Loading single result file:", basename(single_file), "\n")
+      
+      # Check if this is a raw NEOS file
+      first_lines <- readLines(single_file, n = 5)
+      is_raw_neos <- any(grepl("You are using the solver", first_lines))
+      
+      single_data <- fread(
+        single_file,
+        fill = TRUE,
+        skip = if(is_raw_neos) 0 else 2,
+        sep = "\t", 
+        sep2 = "\n"
+      ) %>%
+        rename(V1 = 1)
+      
+      return(single_data)
+    } else {
+      stop("No result files found. Expected either:\n",
+           "  - Combined file: ", combined_file, "\n",
+           "  - Individual batch files with pattern: ", batch_pattern1, " or ", batch_pattern2, "\n",
+           "  - Single file: ", single_file, "\n",
+           "\nAvailable files in directory:\n",
+           paste("    ", head(all_files, 10), collapse = "\n"))
+    }
+  }
+}
+
+# Load the results using batch-aware function
+result_filename <- paste0(
+  "NEOS_result_globalsens",
+  nbootstraps,
+  "bs", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".txt"
+)
+
+dat <- load_batch_results(
+  base_filename = result_filename,
+  n_bootstraps = nbootstraps,
+  default_parameters = default_parameters,
+  parameter_tag = parameter_tag
+)
+
+# Simple validation of loaded results
+cat("[SUCCESS] Result data loaded successfully.\n")
+cat("  Total rows:", nrow(dat), "\n")
+cat("  Non-empty rows:", sum(!is.na(dat$V1) & dat$V1 != ""), "\n")
+cat("  Ready for parsing...\n")
+
+```
+
+```{r parse cost and solve results}
+
+end.rows <- which(sapply(dat$V1, grepl, pattern = ";"))
+
+# First, parse the actual results to determine how many bootstraps we have
+solve.stati <- dat[which(sapply(dat$V1, grepl, pattern = "solve_result = ")), ]
+solve_results <- as.numeric(sapply(solve.stati$V1, grepl, pattern = "solved"))
+
+cost.displays <- dat[which(sapply(dat$V1, grepl, pattern = "cost = ")), ]$V1
+cost_results <- parse_number(as.character(cost.displays))
+
+loads_lim.displays <- data.frame(
+  str_split_fixed(
+    dat[which(sapply(dat$V1, grepl, pattern = "loads_lim_")), ]$V1, " ", n = 3
+  )
+)
+names(loads_lim.displays) <- c("Target", "X", "Limit")
+
+# Determine unique targets to calculate targets per bootstrap
+unique_targets <- unique(gsub("loads_lim_", "", gsub("_rev", "", loads_lim.displays$Target)))
+n_unique_targets <- length(unique_targets)
+
+cat("Found", n_unique_targets, "unique loading targets:", paste(unique_targets, collapse = ", "), "\n")
+cat("Found", nrow(loads_lim.displays), "total loading limit rows\n")
+
+# Calculate actual number of bootstraps with results from the data
+n_bootstraps_with_results <- nrow(loads_lim.displays) / n_unique_targets
+
+# Validate
+if(n_bootstraps_with_results <= 0 || !is.finite(n_bootstraps_with_results)) {
+  stop("Error: Could not determine number of bootstraps with results. ",
+       "Found ", nrow(loads_lim.displays), " loading limit rows with ", 
+       n_unique_targets, " unique targets.")
+}
+n_bootstraps_with_results <- round(n_bootstraps_with_results)
+
+# Now check the bootstrap set definition for reference (but don't rely on it for combined batch files)
+bootstrapset_begin <- which(sapply(dat$V1, grepl, pattern = "set Bootstraps :="))
+
+if(length(bootstrapset_begin) > 0) {
+  bootstrapset_begin <- bootstrapset_begin[1]  # Use first occurrence
+  bootstrapset_end <- end.rows[min(which(end.rows > bootstrapset_begin))]
+  
+  # Extract bootstrap numbers from the set definition (may only show first batch range)
+  bootstrap_text <- paste(dat[bootstrapset_begin:bootstrapset_end, ]$V1, collapse = " ")
+  bootstrap_numbers <- str_extract_all(bootstrap_text, "[0-9]+")[[1]]
+  n_bootstraps_from_set <- max(as.numeric(bootstrap_numbers))
+  
+  # For combined batch files, the set definition only shows the first batch range
+  # Use the actual results count instead
+  n_bootstraps <- max(n_bootstraps_with_results, nbootstraps)
+  
+  if(n_bootstraps_from_set < n_bootstraps_with_results) {
+    cat("Note: Bootstrap set definition shows", n_bootstraps_from_set, "but found", n_bootstraps_with_results, "results (combined batch file)\n")
+  }
+} else {
+  # Fallback: use actual results or expected value
+  n_bootstraps <- max(n_bootstraps_with_results, nbootstraps)
+  cat("Warning: Could not find bootstrap set definition, using results count:", n_bootstraps, "\n")
+}
+
+cat("Detected number of bootstraps from results:", n_bootstraps_with_results, "\n")
+cat("Expected number of bootstraps:", nbootstraps, "\n")
+
+# Create bootstrap assignment for loads_lim data
+# For pre-combined files or single files, use simple sequential numbering
+# For individual batch files, this was already handled during file loading
+bootstrap_assignment <- foreach(i = 1:n_bootstraps_with_results, .combine = "c") %do% {
+  rep(i, n_unique_targets)
+}
+
+loads_lim.summary <- loads_lim.displays %>%
+  mutate(
+    Target = gsub("loads_lim_", "", gsub("_rev", "", Target)),
+    Limit = as.numeric(Limit),
+    bootstrap = bootstrap_assignment[1:nrow(loads_lim.displays)]
+  ) %>%
+  pivot_wider(id_cols = bootstrap, names_from = Target, values_from = Limit)
+
+bootstrap.summary <- data.frame(
+  loads_lim.summary,
+  solve_result = solve_results[1:n_bootstraps_with_results],
+  cost = cost_results[1:n_bootstraps_with_results]
+) %>%
+  mutate(
+    cost = case_when(solve_result == 0 ~ NA_real_, solve_result == 1 ~ cost)
+  )
+
+# Determine which nutrient targets are present
+available_targets <- names(loads_lim.summary)[names(loads_lim.summary) != "bootstrap"]
+primary_target <- available_targets[1]  # Use first available target for main plots
+
+# Create exploratory plots only if multiple targets exist
+if(length(available_targets) >= 2) {
+  if("N1" %in% available_targets && "P1" %in% available_targets) {
+    if("P2" %in% available_targets) {
+      print(ggplot(
+        bootstrap.summary, aes(x = N1, y = solve_result, color = P1, size = P2)
+      ) + geom_point())
+      print(ggplot(
+        bootstrap.summary, aes(x = P1, y = solve_result, size = P2, alpha = N1)
+      ) + geom_point())
+      print(ggplot(
+        bootstrap.summary, aes(x = P2, y = solve_result, color = P1, alpha = N1)
+      ) + geom_point())
+    } else {
+      print(ggplot(
+        bootstrap.summary, aes(x = N1, y = solve_result, color = P1)
+      ) + geom_point())
+    }
+  }
+}
+
+# Basic cost plots (always work)
+cost_histogram <- ggplot(bootstrap.summary, aes(x = cost)) + geom_histogram()
+print(cost_histogram)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Cost_Histogram.png"),
+  plot = cost_histogram,
+  width = 8, height = 6, dpi = 300
+)
+
+# Cost vs loading plot using primary target
+cost_vs_loading <- ggplot(bootstrap.summary, aes_string(x = primary_target, y = "cost")) + 
+  geom_point() +
+  labs(x = paste0("Target Loading (", primary_target, ")"))
+print(cost_vs_loading)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Cost_vs_Loading_Target.png"),
+  plot = cost_vs_loading,
+  width = 8, height = 6, dpi = 300
+)
+
+# Model success plot using primary target
+ModelSuccessorFailure <- ggplot(
+  bootstrap.summary, aes_string(x = primary_target, y = "solve_result")
+) + 
+  geom_point(size = 3, alpha = 0.1) +
+  labs(x = paste0("Target Loading (", primary_target, ")"), y = "Model Success")
+
+print(ModelSuccessorFailure)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Model_Success_vs_Loading_Target.png"),
+  plot = ModelSuccessorFailure,
+  width = 8, height = 6, dpi = 300
+)
+
+cost.plot <- ggplot(bootstrap.summary, aes(x = cost)) + 
+  geom_density(color = "black", fill = "darkgreen") +
+  scale_y_continuous(name = "Probability") +
+  scale_x_log10(
+    name = "Annualized Cost",
+    breaks = c(100000, 1000000, 10000000, 100000000), 
+    minor_breaks = c(
+      100000, 
+      200000,
+      300000,
+      400000,
+      500000,
+      600000,
+      700000,
+      800000,
+      900000,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000,
+      8000000,
+      9000000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000,
+      100000000,
+      200000000,
+      300000000,
+      400000000,
+      500000000,
+      600000000,
+      700000000,
+      800000000,
+      900000000
+    ),
+    labels = c("", "$1,000,000", "", "$100,000,000"),
+  ) +
+  theme_bw() 
+
+print(cost.plot)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Cost_Density_Plot.png"),
+  plot = cost.plot,
+  width = 8, height = 6, dpi = 300
+)
+
+# Use primary target for loading plots
+TotalCostbyLoadingTarget <- ggplot(
+  bootstrap.summary %>% filter(solve_result == 1), 
+  aes_string(x = primary_target, y = "cost")
+) + 
+  geom_point() +
+  scale_x_continuous(
+    trans = "identity",
+    name = paste0("Target Loading (", primary_target, ")"),
+    limits = c(min(bootstrap.summary[[primary_target]]), max(bootstrap.summary[[primary_target]]))
+  ) + 
+  scale_y_continuous(
+    trans = "identity",
+    name = "Annualized Cost"
+  ) 
+
+print(TotalCostbyLoadingTarget)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Total_Cost_by_Loading_Target.png"),
+  plot = TotalCostbyLoadingTarget,
+  width = 8, height = 6, dpi = 300
+)
+```
+
+```{r analysis for global analysis text section}
+## For Text in Global Sensivity Analysis section
+## Note: These analyses use the primary target dynamically
+
+# Create dynamic column names for analysis
+target_col <- primary_target
+target_col_adj <- paste0(primary_target, ".adj")
+
+# Regression of cost vs loading target
+if(nrow(bootstrap.summary %>% filter(!is.na(cost), cost > 0)) > 0) {
+  bootstrap.summary.adj <- bootstrap.summary %>% 
+    mutate(cost.adj = cost) %>%
+    rename_at(vars(primary_target), ~"target_value") %>%
+    mutate(target_value.adj = target_value) %>%
+    filter(cost.adj > 0)
+  
+  if(nrow(bootstrap.summary.adj) > 1) {
+    summary(
+      lm(log10(cost.adj) ~ target_value.adj, data = bootstrap.summary.adj)
+    )
+  }
+}
+
+# Minimum loading target achieved
+if(nrow(bootstrap.summary %>% filter(!is.na(cost))) > 0) {
+  min_achieved <- min(bootstrap.summary %>% filter(!is.na(cost)) %>% .[[primary_target]])
+  cat("Minimum", primary_target, "achieved:", min_achieved, "\n")
+}
+
+# Plot cost spread by loading target (binned)
+if("solve_result" %in% names(bootstrap.summary) && 
+   nrow(bootstrap.summary %>% filter(solve_result == 1)) > 20) {
+  
+  spread_plot <- bootstrap.summary %>%
+    filter(solve_result == 1) %>%
+    rename(target_value = !!sym(primary_target)) %>%
+    mutate(bin = ntile(target_value, 20)) %>%
+    group_by(bin) %>%
+    summarize(
+      spread = max(cost) - min(cost),
+      target_mean = mean(target_value)
+    )
+  
+  cost_spread_plot <- ggplot(spread_plot, aes(x = target_mean, y = spread)) +
+    geom_point() +
+    labs(x = paste0("Mean Target (", primary_target, ")"), y = "Cost Spread")
+  
+  print(cost_spread_plot)
+  
+  # Save the plot
+  ggsave(
+    filename = paste0(figureoutputs, "Cost_Spread_by_Target.png"),
+    plot = cost_spread_plot,
+    width = 8, height = 6, dpi = 300
+  )
+}
+
+bootstrap.summary %>%
+  filter(solve_result == 1) %>%
+  rename(target_value = !!sym(primary_target)) %>%
+  mutate(bin = ntile(target_value, 20)) %>%
+  group_by(bin) %>%
+  summarize(
+    max(cost),
+    min(cost),
+    spread = max(cost) - min(cost),
+    target_mean = mean(target_value)
+  )
+
+# Regression: cost spread vs loading target
+if(nrow(bootstrap.summary %>% filter(solve_result == 1)) > 20) {
+  spread_data <- bootstrap.summary %>%
+    filter(solve_result == 1) %>%
+    rename(target_value = !!sym(primary_target)) %>%
+    mutate(bin = ntile(target_value, 20)) %>%
+    group_by(bin) %>%
+    mutate(
+      spread = max(cost) - min(cost),
+      target_mean = mean(target_value)
+    ) %>%
+    mutate(spread.adj = spread, target.adj = target_mean)
+  
+  if(nrow(spread_data) > 1) {
+    summary(lm(log10(spread.adj) ~ target.adj, data = spread_data))
+  }
+}
+
+# Filter to specific loading range (if enough data)
+if(nrow(bootstrap.summary %>% filter(solve_result == 1)) > 0) {
+  target_range <- range(bootstrap.summary[[primary_target]], na.rm = TRUE)
+  mid_range <- mean(target_range)
+  
+  bootstrap.summary %>%
+    filter(solve_result == 1) %>%
+    filter(!!sym(primary_target) > mid_range * 0.97, 
+           !!sym(primary_target) < mid_range * 1.03) %>%
+    summarize(min(cost), max(cost))
+}
+## end analyses for text
+```
+
+```{r plots}
+
+# Plot with model failures shown
+TotalCostbyLoadingTarget_withmodelfailure <- ggplot(
+  bootstrap.summary, aes_string(x = primary_target, y = "cost")
+) + 
+  geom_point() +
+  scale_x_continuous(
+    name = paste0("Target Loading (", primary_target, ")")
+  ) + 
+  scale_y_continuous(
+    name = "Annualized Cost"
+  ) +
+  geom_point(
+    data = bootstrap.summary %>% 
+      filter(solve_result == 0) %>%
+      mutate(cost = 0), 
+    color = "grey",
+    shape = 17
+  )
+
+print(TotalCostbyLoadingTarget_withmodelfailure)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Total_Cost_by_Loading_Target_with_Model_Failure.png"),
+  plot = TotalCostbyLoadingTarget_withmodelfailure,
+  width = 8, height = 6, dpi = 300
+)
+
+bootstrap.summary %>% group_by(solve_result) %>% summarize(n())
+
+```
+
+```{r save cost and solve result output figures}
+ggsave(
+  "UserGuideFig5-1.png",
+  plot = ModelSuccessorFailure,
+  path = figureoutputs,
+  height = 4,
+  width = 4,
+  units = "in"
+)
+
+ggsave(
+  "UserGuideFig5-2.png",
+  plot = TotalCostbyLoadingTarget,
+  path = figureoutputs,
+  height = 3,
+  width = 4,
+  units = "in"
+)
+
+ggsave(
+  "Fig4.png",
+  plot = TotalCostbyLoadingTarget_withmodelfailure,
+  path = figureoutputs,
+  height = 3,
+  width = 4,
+  units = "in"
+)
+```
+
+
+```{r parse BMP decisions}
+
+BMPdescriptions_begin <- which(sapply(dat$V1, grepl, pattern = "sum[{]c in comid_all[}]"))
+which_point <- grep("point", dat[BMPdescriptions_begin,]$V1)
+which_ag <- grep("ag", dat[BMPdescriptions_begin,]$V1)
+which_urban <- grep("urban", dat[BMPdescriptions_begin,]$V1)
+which_ripbuf <- grep("ripbuf", dat[BMPdescriptions_begin,]$V1)
+BMP <- c()
+BMP[which_point] <- "point"
+BMP[which_ag] <- "ag"
+BMP[which_urban] <- "urban"
+BMP[which_ripbuf] <- "ripbuf"
+
+BMP.end.rows <- which(sapply(dat$V1, grepl, pattern = ";"))
+
+BMPdescriptions_end <- foreach(
+  i = 1:length(BMPdescriptions_begin), .combine = "c"
+) %do% {
+  if(i %in% which_point) {tmp <- BMPdescriptions_begin[i]} else {
+    tmp <- BMP.end.rows[min(which(BMP.end.rows > BMPdescriptions_begin[i]))]
+  }
+  tmp
+}
+
+# Simplified bootstrap assignment for BMP data
+# Use simple sequential logic based on number of BMP result sets
+n_bmp_results <- length(BMPdescriptions_begin)
+results_per_bootstrap <- 4  # Typical number of BMP categories per bootstrap
+
+BMPspending_summary <- foreach(i = 1:length(BMPdescriptions_begin), .combine = "rbind") %do% {
+  tmp <- dat[BMPdescriptions_begin[i]:BMPdescriptions_end[i],1]$V1
+  
+  # Simple bootstrap numbering
+  bootstrap_num <- ceiling(i / results_per_bootstrap)
+  
+  if(i %in% which_point) {
+    bee <- as.numeric(str_split_fixed(tmp, " = ", n = 2)[2])
+    tmp.dat <- data_frame(bootstrap = bootstrap_num, BMP = "WWTP_upgrades", Total_Spent = bee)
+  } else if(length(tmp) > 2) {
+    tmp.clean <- str_split_fixed(parse_character(tmp[2:(length(tmp)-1)]), " ", n = 2)
+    BMP <- parse_character(tmp.clean[,1])
+    costs <- parse_number(tmp.clean[,2])
+    
+    tmp.dat <- data_frame(bootstrap = bootstrap_num, BMP = BMP, Total_Spent = costs)
+  } else {tmp.dat <- NULL}
+  tmp.dat
+}
+
+BMPspending_summary_full <- BMPspending_summary %>%
+  full_join(., BMPspending_summary %>% expand(bootstrap, BMP)) %>%
+  mutate(
+    Total_Spent = case_when(
+      is.na(Total_Spent) ~ 0, !is.na(Total_Spent) ~ Total_Spent
+    ),
+    BMP_Category = case_when(
+      BMP %in% c("WWTP_upgrades") ~ "Point Source BMPs",
+      BMP %in% c("Grassed_Buffer", "Forested_Buffer") ~ "Riparian Buffer BMPs",
+      BMP %in% c("Biofiltration_w_Underdrain", "Bioretention_Basin", "Enhanced_Biofiltration_w_ISR", "Extended_Dry_Detention_Basin", "Grass_Swale_w_detention", "Gravel_Wetland", "Infiltration_Basin", "Infiltration_Chamber", "Infiltration_Trench", "Porous_Pavement_w_subsurface_infiltration", "Porous_Pavement_w_underdrain", "Sand_Filter_w_underdrain", "Wet_Pond") ~ "Urban BMPs",
+      BMP %in% c("Conservation", "Contour_Farming", "Fert_20", "Filterstrip", "Manure_Injection", "MIN_TILL", "Ponds", "Terrace_Only", "Terrace_Waterway", "Waterway_Only") ~ "Agricultural BMPs",
+      BMP %in% c("Forested_Buffer", "Grassed_Buffer") ~ "Riparian Buffer BMPs",
+    )
+  )%>%
+  left_join(., bootstrap.summary, by = "bootstrap") %>%
+  filter(solve_result == 1)
+
+BMPspending.hists <- ggplot(BMPspending_summary_full, aes(x = Total_Spent)) + 
+  geom_density(fill = "darkgreen") + 
+  facet_wrap("BMP", scales = "free_y") + 
+  scale_y_continuous(name = "Probability") +
+  scale_x_continuous(
+    trans = "pseudo_log",
+    name = "Annualized Cost",
+    breaks = c(1, 1000, 1000000), 
+    minor_breaks = c(
+      100, 
+      200,
+      300,
+      400,
+      500,
+      600,
+      700,
+      800,
+      900,
+      10000,
+      20000,
+      30000,
+      40000,
+      50000,
+      60000,
+      70000,
+      80000,
+      90000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000
+    ),
+    labels = c("$1", "$1,000", "$1,000,000"),
+  ) +
+  theme_bw() 
+
+print(BMPspending.hists)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "BMPspending_histograms.png"),
+  plot = BMPspending.hists,
+  width = 12, height = 8, dpi = 300
+)
+
+# Use primary_target dynamically in BMP spending plots
+AgBMPSpending <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Agricultural BMPs"), 
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_smooth(lwd = 2, se = FALSE) +
+  geom_point(alpha = 0.5) +
+  scale_x_continuous(
+    name = paste0("Target Loading (", primary_target, ")"),
+    limits = c(min(bootstrap.summary[[primary_target]]), max(bootstrap.summary[[primary_target]]))
+  ) +
+  scale_y_continuous(
+    name = "Annualized Spending"
+  ) +
+  scale_color_brewer(palette = "Set3")
+
+print(AgBMPSpending)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Agricultural_BMP_Spending.png"),
+  plot = AgBMPSpending,
+  width = 10, height = 6, dpi = 300
+)
+
+PointBMPSpending <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Point Source BMPs"), 
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_smooth(lwd = 2, se = FALSE) +
+  geom_point(alpha = 0.5) +
+  scale_x_continuous(
+    name = paste0("Target Loading (", primary_target, ")"),
+    limits = c(min(bootstrap.summary[[primary_target]]), max(bootstrap.summary[[primary_target]]))
+  ) +
+  scale_y_continuous(
+    name = "Annualized Spending"
+  ) +
+  scale_color_brewer(palette = "Set2")
+
+print(PointBMPSpending)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Point_Source_BMP_Spending.png"),
+  plot = PointBMPSpending,
+  width = 10, height = 6, dpi = 300
+)
+
+UrbanBMPSpending <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Urban BMPs" & BMP != "Grass_Swale_w_detention"), # Grass_Swale_w_detention is underused, and otherwise I run out of colors
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_point(size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(
+    name = paste0("Target Loading (", primary_target, ")"),
+    limits = c(min(bootstrap.summary[[primary_target]]), max(bootstrap.summary[[primary_target]]))
+  ) +
+  scale_y_continuous(
+    name = "Annualized Spending"
+  ) +
+  scale_color_brewer(palette = "Set3") 
+
+print(UrbanBMPSpending)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Urban_BMP_Spending.png"),
+  plot = UrbanBMPSpending,
+  width = 12, height = 8, dpi = 300
+)
+
+BMPspending_urban_log <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Urban BMPs" & BMP != "Grass_Swale_w_detention"), # Grass_Swale_w_detention is underused, and otherwise I run out of colors
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_point(size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(name = paste0("Target Loading (", primary_target, ")")) +
+  scale_y_continuous(
+    trans = "pseudo_log",
+    name = "Annualized Spending", 
+    breaks = c(0, 100, 10000, 1000000, 100000000), 
+    labels = c("$0", "$100", "$10,000", "$1,000,000", "$100,000,000")
+  ) +
+  scale_color_brewer(palette = "Set3")
+
+print(BMPspending_urban_log)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Urban_BMP_Spending_LogScale.png"),
+  plot = BMPspending_urban_log,
+  width = 12, height = 8, dpi = 300
+)
+
+RiparianBMPspending <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Riparian Buffer BMPs"), 
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(
+    name = paste0("Target Loading (", primary_target, ")"),
+    limits = c(min(bootstrap.summary[[primary_target]]), max(bootstrap.summary[[primary_target]]))
+  ) +
+  scale_y_continuous(
+    name = "Annualized Spending",
+    labels = c("$0", "$1,000,000", "$2,000,000", "$3,000,000")
+  ) +
+  scale_color_brewer(palette = "Set1")
+
+print(RiparianBMPspending)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Riparian_BMP_Spending.png"),
+  plot = RiparianBMPspending,
+  width = 10, height = 6, dpi = 300
+)
+```
+
+```{r code for choosing BMPs to display}
+BMPspending_summary_full %>%
+  group_by(BMP) %>%
+  summarise(
+    mean_spent = mean(Total_Spent),
+    # BMP_Category = case_when(
+    #   BMP_Category == "Urban BMPs" ~ "Urban BMPs",
+    #   BMP_Category %in% c(
+    #     "Agricultural BMPs", "Point Source BMPs", "Riparian Buffer BMPs"
+    #     ) ~ "Agricultural, Point Source or Riparaian Buffer BMPs"
+    # )
+  ) %>%
+  arrange(desc(mean_spent))
+```
+
+```{r BMP spending plots}
+
+BMPSpending <- ggplot(
+  BMPspending_summary_full %>%
+    group_by(BMP) %>%
+    mutate(
+      mean_spent = mean(Total_Spent),
+      # BMP_Category = case_when(
+      #   BMP_Category == "Urban BMPs" ~ "Urban BMPs",
+      #   BMP_Category %in% c(
+      #     "Agricultural BMPs", "Point Source BMPs", "Riparian Buffer BMPs"
+      #     ) ~ "Agricultural, Point Source or Riparaian Buffer BMPs"
+      # )
+    ) %>%
+    filter(
+      BMP %in% c(
+        "WWTP_upgrades",
+        "Grassed_Buffer",
+        "Forested_Buffer",
+        "Infiltration_Basin",
+        "Infiltration_Trench",
+        "Gravel_Wetland",
+        "Porous_Pavement_w_subsurface_infiltration",
+        "Ponds",
+        "Filterstrip",
+        "Waterway_Only",
+        "Terrace_Waterway"
+      )
+    )
+  , 
+  aes_string(
+    y = "Total_Spent / 1000000", 
+    x = paste0(primary_target, " / 1000000"), 
+    group = "BMP", 
+    color = "BMP"
+  )
+) + 
+  geom_point(size = 2, alpha = 0.3) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(name = paste0("Target Loading (x 1,000,000, ", primary_target, ")")) +
+  scale_y_continuous(
+    trans = "identity",
+    name = "Annualized Spending (x $1,000,000)"
+  ) +
+  facet_wrap(facets = "BMP_Category", scales = "free") +
+  scale_color_brewer(palette = "Set3") +
+  theme(legend.position = "bottom") 
+
+print(BMPSpending)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "BMP_Spending_by_Category.png"),
+  plot = BMPSpending,
+  width = 12, height = 8, dpi = 300
+)
+
+BMPspending_targetag <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Agricultural BMPs"), 
+  aes(y = Total_Spent, x = cost, color = BMP, group = BMP)
+) + 
+  geom_smooth(lwd = 2, se = FALSE) +
+  geom_point(alpha = 0.5) +
+  scale_x_log10(
+    name = "Annualized Cost",
+    breaks = c(100000, 1000000, 10000000, 100000000), 
+    minor_breaks = c(
+      100000, 
+      200000,
+      300000,
+      400000,
+      500000,
+      600000,
+      700000,
+      800000,
+      900000,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000,
+      8000000,
+      9000000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000,
+      100000000,
+      200000000,
+      300000000,
+      400000000,
+      500000000,
+      600000000,
+      700000000,
+      800000000,
+      900000000
+    ),
+    labels = c("", "$1,000,000", "", "$100,000,000"),
+  ) +
+  theme_bw() +
+  scale_y_continuous(
+    name = "Annualized Spending", 
+    breaks = c(0, 2000000, 4000000, 6000000), 
+    labels = c("$0", "$2,000,000", "$4,000,000", "$6,000,000")
+  ) +
+  scale_color_brewer(palette = "Set3")
+
+print(BMPspending_targetag)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Agricultural_BMP_Spending_vs_Total_Cost.png"),
+  plot = BMPspending_targetag,
+  width = 10, height = 6, dpi = 300
+)
+
+BMPspending_targetpoint <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Point Source BMPs"), 
+  aes(y = Total_Spent, x = cost, color = BMP, group = BMP)
+) + 
+  geom_smooth(lwd = 2, se = FALSE) +
+  geom_point(alpha = 0.5) +
+  scale_x_log10(
+    name = "Annualized Cost",
+    breaks = c(100000, 1000000, 10000000, 100000000), 
+    minor_breaks = c(
+      100000, 
+      200000,
+      300000,
+      400000,
+      500000,
+      600000,
+      700000,
+      800000,
+      900000,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000,
+      8000000,
+      9000000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000,
+      100000000,
+      200000000,
+      300000000,
+      400000000,
+      500000000,
+      600000000,
+      700000000,
+      800000000,
+      900000000
+    ),
+    labels = c("", "$1,000,000", "", "$100,000,000"),
+  ) +
+  theme_bw() +
+  scale_y_continuous(
+    name = "Annualized Spending", 
+    breaks = c(0, 100000, 200000, 300000, 400000), 
+    labels = c("$0", "100,000", "$200,000", "$300,000", "$400,000")
+  ) +
+  scale_color_brewer(palette = "Set2")
+
+print(BMPspending_targetpoint)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Point_Source_BMP_Spending_vs_Total_Cost.png"),
+  plot = BMPspending_targetpoint,
+  width = 10, height = 6, dpi = 300
+)
+
+BMPspending_targeturban <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Urban BMPs" & BMP != "Grass_Swale_w_detention"), # Grass_Swale_w_detention is underused, and otherwise I run out of colors
+  aes(y = Total_Spent, x = cost, color = BMP, group = BMP)
+) + 
+  geom_point(size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_log10(
+    name = "Annualized Cost",
+    breaks = c(100000, 1000000, 10000000, 100000000), 
+    minor_breaks = c(
+      100000, 
+      200000,
+      300000,
+      400000,
+      500000,
+      600000,
+      700000,
+      800000,
+      900000,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000,
+      8000000,
+      9000000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000,
+      100000000,
+      200000000,
+      300000000,
+      400000000,
+      500000000,
+      600000000,
+      700000000,
+      800000000,
+      900000000
+    ),
+    labels = c("", "$1,000,000", "", "$100,000,000"),
+  ) +
+  theme_bw() +
+  scale_y_continuous(
+    name = "Annualized Spending", 
+    breaks = c(0, 100000000, 200000000, 300000000, 400000000), 
+    labels = c("$0", "$100,000,000", "$200,000,000", "$300,000,000", "$400,000,000")
+  ) +
+  scale_color_brewer(palette = "Set3")
+
+print(BMPspending_targeturban)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Urban_BMP_Spending_vs_Total_Cost.png"),
+  plot = BMPspending_targeturban,
+  width = 12, height = 8, dpi = 300
+)
+
+BMPspending_targetripbuf <- ggplot(
+  BMPspending_summary_full %>% filter(BMP_Category == "Riparian Buffer BMPs"), 
+  aes(y = Total_Spent, x = cost, color = BMP, group = BMP)
+) + 
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_log10(
+    name = "Annualized Cost",
+    breaks = c(100000, 1000000, 10000000, 100000000), 
+    minor_breaks = c(
+      100000, 
+      200000,
+      300000,
+      400000,
+      500000,
+      600000,
+      700000,
+      800000,
+      900000,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000,
+      8000000,
+      9000000,
+      10000000,
+      20000000,
+      30000000,
+      40000000,
+      50000000,
+      60000000,
+      70000000,
+      80000000,
+      90000000,
+      100000000,
+      200000000,
+      300000000,
+      400000000,
+      500000000,
+      600000000,
+      700000000,
+      800000000,
+      900000000
+    ),
+    labels = c("", "$1,000,000", "", "$100,000,000"),
+  ) +
+  theme_bw() +
+  scale_y_continuous(
+    name = "Annualized Spending", 
+    breaks = c(0, 2000000, 4000000, 6000000), 
+    labels = c("$0", "$2,000,000", "$4,000,000", "$6,000,000")
+  ) +
+  scale_color_brewer(palette = "Set1")
+
+print(BMPspending_targetripbuf)
+
+# Save the plot
+ggsave(
+  filename = paste0(figureoutputs, "Riparian_BMP_Spending_vs_Total_Cost.png"),
+  plot = BMPspending_targetripbuf,
+  width = 10, height = 6, dpi = 300
+)
+```
+
+```{r code for discussion text}
+ggplot(
+  BMPspending_summary_full %>% 
+    filter(BMP_Category == "Urban BMPs") %>%
+    group_by(bootstrap) %>%
+    summarize(
+      urban_cost = sum(Total_Spent), 
+      total_cost = mean(cost), 
+      frac_urb = urban_cost / total_cost
+    ),
+  aes(x = frac_urb)
+) +
+  geom_histogram()
+
+ggplot(
+  BMPspending_summary_full %>% 
+    filter(BMP_Category == "Urban BMPs") %>%
+    group_by(bootstrap) %>%
+    summarize(
+      urban_cost = sum(Total_Spent), 
+      total_cost = mean(cost), 
+      frac_urb = urban_cost / total_cost
+    ),
+  aes(x = total_cost, y = urban_cost)
+) +
+  geom_point() +
+  geom_abline(color = "gray20", lty = 2)
+
+summary(
+  with(  
+    BMPspending_summary_full %>% 
+      filter(BMP_Category == "Urban BMPs") %>%
+      group_by(bootstrap) %>%
+      summarize(
+        urban_cost = sum(Total_Spent), 
+        total_cost = mean(cost), 
+        frac_urb = urban_cost / total_cost
+      ),
+    lm(urban_cost ~ total_cost)
+  )
+)
+```
+
+
+```{r save parse BMP decisions output plots}
+ggsave(
+  "UserGuideFig5-4.png",
+  plot = AgBMPSpending,
+  path = figureoutputs,
+  height = 4,
+  width = 6,
+  units = "in"
+)
+
+
+ggsave(
+  "UserGuideFig5-3.png",
+  plot = PointBMPSpending,
+  path = figureoutputs,
+  height = 4,
+  width = 6,
+  units = "in"
+)
+
+
+ggsave(
+  "UserGuideFig5-5.png",
+  plot = UrbanBMPSpending,
+  path = figureoutputs,
+  height = 4,
+  width = 7,
+  units = "in"
+)
+
+
+ggsave(
+  "UserGuideFig5-6.png",
+  plot = RiparianBMPspending,
+  path = figureoutputs,
+  height = 4,
+  width = 6,
+  units = "in"
+)
+
+ggsave(
+  "Fig5.png",
+  plot = BMPSpending,
+  path = figureoutputs,
+  height = 6,
+  width = 6,
+  units = "in"
+)
+```
+
+
+```{r parse urban user specs}
+begin.urb.maxmin <- which(grepl(pattern = "urban_frac_max_rev", x = dat$V1))
+begin.urb.dd <- which(grepl(pattern = "urban_design_depth_rev", x = dat$V1))
+
+# Function to parse AMPL display output format with batch-aware bootstrap numbering
+parse_ampl_display <- function(start_indices, dat, end_rows) {
+  all_results <- list()
+  
+  for(i in 1:length(start_indices)) {
+    start_idx <- start_indices[i]
+    end_idx <- end_rows[min(which(end_rows > start_idx))] - 1
+    
+    # Get the lines between start and end
+    lines <- dat$V1[(start_idx + 1):end_idx]
+    
+    # Remove empty lines and lines that are just symbols
+    lines <- lines[!grepl("^\\s*$|^\\s*[{}=:]+\\s*$", lines)]
+    
+    # Try to extract BMP names and values from AMPL display format
+    parsed_data <- data.frame()
+    
+    for(line in lines) {
+      # Handle different AMPL display formats
+      if(grepl("\\[.*\\]", line)) {
+        # Format: BMP_name[index] = value or BMP_name[index] value
+        matches <- regmatches(line, regexec("([A-Za-z_][A-Za-z0-9_]*)(?:\\[.*\\])?\\s*[=:]?\\s*([0-9.-]+)", line))
+        if(length(matches[[1]]) >= 3) {
+          bmp_name <- matches[[1]][2]
+          value <- as.numeric(matches[[1]][3])
+          parsed_data <- rbind(parsed_data, data.frame(BMP = bmp_name, value = value, stringsAsFactors = FALSE))
+        }
+      } else if(grepl("\\s+[0-9.-]+", line)) {
+        # Format: BMP_name    value
+        parts <- trimws(strsplit(line, "\\s+")[[1]])
+        if(length(parts) >= 2 && !is.na(as.numeric(parts[length(parts)]))) {
+          bmp_name <- paste(parts[1:(length(parts)-1)], collapse = "_")
+          value <- as.numeric(parts[length(parts)])
+          parsed_data <- rbind(parsed_data, data.frame(BMP = bmp_name, value = value, stringsAsFactors = FALSE))
+        }
+      }
+    }
+    
+    if(nrow(parsed_data) > 0) {
+      # Determine batch-aware bootstrap number
+      if("is_combined_file" %in% names(dat) && any(dat$is_combined_file)) {
+        # For pre-combined files, use simple sequential numbering
+        parsed_data$bootstrap <- i
+        
+      } else if("batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+        # Find the batch information for this start index
+        if(start_idx <= nrow(dat)) {
+          batch_info <- dat[start_idx, ]
+          
+          # Find position within batch for urban/riparian displays
+          batch_rows <- which(dat$batch_num == batch_info$batch_num)
+          batch_display_rows <- intersect(start_indices, batch_rows)
+          position_in_batch <- which(batch_display_rows == start_indices[i])
+          
+          # Calculate global bootstrap number
+          global_bootstrap <- batch_info$bootstrap_offset + position_in_batch
+          parsed_data$bootstrap <- global_bootstrap
+        } else {
+          parsed_data$bootstrap <- i  # Fallback
+        }
+      } else {
+        parsed_data$bootstrap <- i  # Single file processing
+      }
+      
+      all_results[[i]] <- parsed_data
+    }
+  }
+  
+  if(length(all_results) > 0) {
+    return(do.call(rbind, all_results))
+  } else {
+    return(data.frame(BMP = character(0), value = numeric(0), bootstrap = numeric(0)))
+  }
+}
+
+# Parse urban_frac_max_rev
+if(length(begin.urb.maxmin) > 0) {
+  fracmax_raw <- parse_ampl_display(begin.urb.maxmin, dat, BMP.end.rows)
+  
+  fracmax <- fracmax_raw %>%
+    filter(
+      BMP %in% c(
+        "Infiltration_Basin", 
+        "Infiltration_Chamber",
+        "Infiltration_Trench",
+        "Porous_Pavement_w_subsurface_infiltration",
+        "Enhanced_Biofiltration_w_ISR", 
+        "Gravel_Wetland",
+        "Wet_Pond"
+      )
+    ) %>%
+    select(bootstrap, BMP, frac_max = value) %>%
+    pivot_wider(
+      id_cols = bootstrap, 
+      names_from = BMP,
+      values_from = frac_max, 
+      names_prefix = "frac_max_"
+    )
+} else {
+  fracmax <- data.frame(bootstrap = integer(0))
+}
+
+# Debug: Check what we parsed
+cat("Urban frac_max parsing results:\n")
+print(str(fracmax))
+View(fracmax)
+
+# Parse urban_design_depth_rev
+if(length(begin.urb.dd) > 0) {
+  urb_dd_raw <- parse_ampl_display(begin.urb.dd, dat, BMP.end.rows)
+  
+  urb_dd <- urb_dd_raw %>%
+    filter(
+      BMP %in% c(
+        "Infiltration_Basin", 
+        "Infiltration_Chamber",
+        "Infiltration_Trench",
+        "Porous_Pavement_w_subsurface_infiltration",
+        "Enhanced_Biofiltration_w_ISR", 
+        "Gravel_Wetland",
+        "Wet_Pond"
+      )
+    ) %>%
+    group_by(bootstrap, BMP) %>%
+    summarize(designdepth = mean(value, na.rm = TRUE), .groups = "drop") %>%
+    pivot_wider(
+      id_cols = bootstrap, 
+      names_from = BMP,
+      values_from = designdepth, 
+      names_prefix = "designdepth_"
+    )
+} else {
+  urb_dd <- data.frame(bootstrap = integer(0))
+}
+
+BMPspending_summary_fuller <- merge(
+  x = merge(x = urb_dd, y = fracmax, by = "bootstrap"),
+  y = BMPspending_summary_full, 
+  by = "bootstrap"
+)
+
+# Check if design depth column exists, otherwise create grouping variable
+urban_plot_data <- BMPspending_summary_fuller %>% 
+  filter(BMP_Category == "Urban BMPs" & BMP != "Grass_Swale_w_detention")
+
+# Only create plot if there's data to plot
+if(nrow(urban_plot_data) > 0) {
+  if("designdepth_Infiltration_Trench" %in% names(urban_plot_data)) {
+    urban_plot_data <- urban_plot_data %>%
+      mutate(group = factor(ntile(designdepth_Infiltration_Trench, 3)))
+  } else {
+    # Fallback: group by any available design depth column, or use bootstrap quantiles
+    dd_cols <- names(urban_plot_data)[grepl("^designdepth_", names(urban_plot_data))]
+    if(length(dd_cols) > 0) {
+      urban_plot_data <- urban_plot_data %>%
+        mutate(group = factor(ntile(.data[[dd_cols[1]]], 3)))
+    } else {
+      urban_plot_data <- urban_plot_data %>%
+        mutate(group = factor(ntile(bootstrap, 3)))
+    }
+  }
+  
+  UrbanBMPSpending_newview <- ggplot(
+    urban_plot_data,
+    aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+  ) + 
+    geom_point(size = 2) +
+    geom_smooth(lwd = 2, se = FALSE) +
+    scale_x_continuous(name = "") +
+    scale_y_continuous(
+      name = "Annualized Spending"
+    ) +
+    scale_color_brewer(palette = "Set3") +
+    facet_wrap("group") + 
+    theme(legend.position = "bottom")
+  
+  print(UrbanBMPSpending_newview)
+  
+  # Save the plot
+  ggsave(
+    filename = paste0(figureoutputs, "Urban_BMP_Spending_by_Design_Depth.png"),
+    plot = UrbanBMPSpending_newview,
+    width = 12, height = 8, dpi = 300
+  )
+} else {
+  cat("Note: No Urban BMP data available for plotting (after filtering out Grass_Swale_w_detention)\n")
+}
+```
+
+```{r parse riparian user specs}
+
+begin.ripbuf.maxmin <- which(grepl(pattern = "ripbuf_frac_max_rev", x = dat[,1]$V1))
+
+# Parse ripbuf_frac_max_rev using the same function
+if(length(begin.ripbuf.maxmin) > 0) {
+  fracmax_rb_raw <- parse_ampl_display(begin.ripbuf.maxmin, dat, BMP.end.rows)
+  
+  fracmax.rb <- fracmax_rb_raw %>%
+    select(bootstrap, BMP, frac_max = value) %>%
+    pivot_wider(
+      id_cols = bootstrap, 
+      names_from = BMP,
+      values_from = frac_max, 
+      names_prefix = "frac_max_"
+    )
+} else {
+  fracmax.rb <- data.frame(bootstrap = integer(0))
+}
+
+# Debug: Check what we parsed for riparian buffers
+cat("Riparian buffer frac_max parsing results:\n")
+print(str(fracmax.rb))
+
+BMPspending_summary_fullest <- merge(
+  x = BMPspending_summary_fuller, y = fracmax.rb, by = "bootstrap"
+)
+
+# Debug: Check the merge results
+cat("Checking BMPspending_summary_fullest after merge:\n")
+cat("Dimensions:", dim(BMPspending_summary_fullest), "\n")
+cat("Columns:", colnames(BMPspending_summary_fullest), "\n")
+
+# Debug: Check riparian buffer data specifically
+riparian_data <- BMPspending_summary_fullest %>% 
+  filter(BMP_Category == "Riparian Buffer BMPs")
+
+cat("Riparian buffer data after filtering:\n")
+cat("Rows:", nrow(riparian_data), "\n")
+if(nrow(riparian_data) > 0) {
+  cat("Sample of frac_max_Grassed_Buffer values:", head(riparian_data$frac_max_Grassed_Buffer), "\n")
+  cat("Any NA values in frac_max_Grassed_Buffer:", any(is.na(riparian_data$frac_max_Grassed_Buffer)), "\n")
+}
+
+RipBufBMPSpending_newview <- ggplot(
+  BMPspending_summary_fullest %>% 
+    filter(BMP_Category == "Riparian Buffer BMPs") %>%
+    filter(!is.na(frac_max_Grassed_Buffer)) %>%  # Remove NA values before ntile
+    mutate(group = factor(ntile(frac_max_Grassed_Buffer, 3))), # Convert to factor and ensure it's not empty
+  aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+) + 
+  geom_point(size = 2) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(name = "") +
+  scale_y_continuous(
+    name = "Annualized Spending"
+  ) +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap("group") + 
+  theme(legend.position = "bottom")
+
+# Check if we have valid data for plotting
+riparian_plot_data <- BMPspending_summary_fullest %>% 
+  filter(BMP_Category == "Riparian Buffer BMPs") %>%
+  filter(!is.na(frac_max_Grassed_Buffer))
+
+if(nrow(riparian_plot_data) > 0 && length(unique(riparian_plot_data$frac_max_Grassed_Buffer)) > 1) {
+  # Create the plot if we have valid data
+  print(RipBufBMPSpending_newview)
+  
+  # Save the plot
+  ggsave(
+    filename = paste0(figureoutputs, "Riparian_BMP_Spending_by_Implementation_Fraction.png"),
+    plot = RipBufBMPSpending_newview,
+    width = 12, height = 8, dpi = 300
+  )
+} else {
+  cat("Warning: Insufficient data for Riparian BMP plot with faceting. Creating simple plot instead.\n")
+  
+  # Fallback plot without faceting
+  RipBufBMPSpending_simple <- ggplot(
+    BMPspending_summary_fullest %>% filter(BMP_Category == "Riparian Buffer BMPs"),
+    aes_string(y = "Total_Spent", x = primary_target, color = "BMP", group = "BMP")
+  ) + 
+    geom_point(size = 2) +
+    geom_smooth(lwd = 2, se = FALSE) +
+    scale_x_continuous(name = paste0("Target Loading (", primary_target, ")")) +
+    scale_y_continuous(name = "Annualized Spending") +
+    scale_color_brewer(palette = "Set1") +
+    theme(legend.position = "bottom")
+  
+  print(RipBufBMPSpending_simple)
+  
+  # Save the simple plot
+  ggsave(
+    filename = paste0(figureoutputs, "Riparian_BMP_Spending_by_Implementation_Fraction.png"),
+    plot = RipBufBMPSpending_simple,
+    width = 12, height = 8, dpi = 300
+  )
+}
+```
+
+## Parse which WWTPs are being upgraded
+
+```{r write modified command script}
+prev_cmdfile <- read.table(
+  file = paste(AMPLscriptsfolder, "STcommand_globalsens.amp", sep=""), 
+  header = FALSE,
+  sep = "\n",
+  quote = ""
+)
+prev_cmdfilecut <- data.frame(V1 = prev_cmdfile[-nrow(prev_cmdfile),])
+
+write.table(
+  prev_cmdfilecut,
+  file = paste(AMPLscriptsfolder, "STcommand_WWTP_globalsens.amp", sep = "") , 
+  sep = "\t",
+  row.names = F,
+  col.names = F,
+  na = "",
+  quote = F
+)
+
+write(
+  paste0("\n display point_dec; \n };"), 
+  file =  paste(AMPLscriptsfolder, "STcommand_WWTP_globalsens.amp", sep = ""),
+  append = T
+)
+
+# Debug: Check that the WWTP command file contains the display point_dec command
+wwtp_cmd_file <- paste(AMPLscriptsfolder, "STcommand_WWTP_globalsens.amp", sep = "")
+if(file.exists(wwtp_cmd_file)) {
+  wwtp_cmd_content <- readLines(wwtp_cmd_file)
+  point_dec_lines <- grep("display point_dec", wwtp_cmd_content, ignore.case = TRUE)
+  if(length(point_dec_lines) > 0) {
+    cat("SUCCESS: WWTP command file contains 'display point_dec' at line(s):", point_dec_lines, "\n")
+  } else {
+    cat("WARNING: WWTP command file does NOT contain 'display point_dec'\n")
+  }
+  cat("WWTP command file total lines:", length(wwtp_cmd_content), "\n")
+  cat("Last few lines of WWTP command file:\n")
+  cat(paste(tail(wwtp_cmd_content, 5), collapse = "\n"), "\n")
+}
+```
+
+```{r send WWTP AMPL scripts to solver}
+
+# Batch NEOS processing for WWTP analysis to avoid truncation
+
+## setting path to model and data files
+modf <- paste0(
+  AMPLscriptsfolder, 
+  "STmodel_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".mod"
+)
+datf <- paste0(
+  AMPLscriptsfolder, 
+  "STdata_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".dat"
+)
+base_comf <- paste0(
+  AMPLscriptsfolder, 
+  "STcommand_WWTP_globalsens", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".amp"
+)
+
+## enter email & comments
+email <- "56407@icf.com"
+
+# Calculate number of batches needed
+n_batches <- ceiling(nbootstraps / batch_size)
+
+# Process each batch with proper randomness handling
+for(batch_num in 1:n_batches) {
+  # Calculate bootstrap range for this batch
+  start_bootstrap <- (batch_num - 1) * batch_size + 1
+  end_bootstrap <- min(batch_num * batch_size, nbootstraps)
+  
+  cat("WWTP Analysis: Processing batch", batch_num, "of", n_batches, 
+      "- bootstraps", start_bootstrap, "to", end_bootstrap, "\n")
+  
+  # Create batch-specific command file with proper randomness handling
+  # Use WWTP-specific function to preserve "display point_dec;" command
+  batch_command_file <- create_wwtp_batch_command_file(
+    batch_num = batch_num,
+    start_bootstrap = start_bootstrap,
+    end_bootstrap = end_bootstrap,
+    base_command_file = base_comf
+  )
+  
+  # Get solver template
+  tmp <- my_NgetSolverTemplate(
+    category = "lp", solvername = "CPLEX", inputMethod = "AMPL"
+  )
+  
+  # Create batch-specific comments
+  comments <- paste(
+    "global sensitivity test WWTP analysis",
+    if(!default_parameters){paste0("(subtext ", parameter_tag, ")")}, 
+    "batch", batch_num, "of", n_batches,
+    "- bootstraps", start_bootstrap, "to", end_bootstrap,
+    "with randomness"
+  )
+  
+  # Import file contents
+  modc <- paste(paste(readLines(modf), collapse = "\n"), "\n")
+  datc <- paste(paste(readLines(datf), collapse = "\n"), "\n")
+  comc <- paste(paste(readLines(batch_command_file), collapse = "\n"), "\n")
+  
+  # Create list object
+  argslist <- list(
+    model = modc, data = datc, commands = comc, comments = comments, email = email
+  )
+  
+  # Create XML string
+  xmls <- CreateXmlString(neosxml = tmp, cdatalist = argslist)
+  
+  # Submit job
+  job.xml.text <- NsubmitJob(
+    xmlstring = xmls, user = "rneos", interface = "", id = 0
+  )
+  
+  # Retrieve results
+  resultfile <- NgetFinalResults(obj = job.xml.text, convert = TRUE)
+  
+  # Write batch results
+  write.table(
+    resultfile@ans, 
+    file = paste0(
+      NEOSresults,
+      "NEOS_result_WWTP_globalsens",
+      nbootstraps,
+      "bs", 
+      if(!default_parameters){paste0("_", parameter_tag)}, 
+      "_batch", batch_num, ".txt"
+    )
+  )
+  
+  # Clean up batch command file
+  if(file.exists(batch_command_file)) {
+    file.remove(batch_command_file)
+  }
+  
+  cat("WWTP Analysis: Completed batch", batch_num, "with randomness\n")
+}
+
+cat("WWTP Analysis: All", n_batches, "batches completed with proper uncertainty handling\n")
+```
+
+## Load and parse WWTP results
+```{r load WWTP file}
+
+# Load WWTP results using batch-aware function
+wwtp_result_filename <- paste0(
+  "NEOS_result_WWTP_globalsens",
+  nbootstraps,
+  "bs", 
+  if(!default_parameters){paste0("_", parameter_tag)}, 
+  ".txt"
+)
+
+dat <- load_batch_results(
+  base_filename = wwtp_result_filename,
+  n_bootstraps = nbootstraps,
+  default_parameters = default_parameters,
+  parameter_tag = parameter_tag
+)
+
+```
+
+## Parse BMP decisions
+```{r parse BMP decisions}
+
+end.rows <- which(sapply(dat$V1, grepl, pattern = ";"))
+
+# Enhanced bootstrap detection for WWTP analysis - use same approach as main analysis
+solve.stati <- dat[which(sapply(dat$V1, grepl, pattern = "solve_result = ")),] 
+solve_results <- as.numeric(sapply(solve.stati, grepl, pattern = "solved"))
+
+cost.displays <- dat[which(sapply(dat$V1, grepl, pattern = "cost = ")),]$V1
+cost_results <- parse_number(as.character(cost.displays))
+
+loads_lim.displays <- data.frame(
+  str_split_fixed(
+    dat[which(sapply(dat$V1, grepl, pattern = "loads_lim_")),]$V1, " ", n = 3
+  )
+)
+names(loads_lim.displays) <- c("Target", "X", "Limit")
+
+# Use the same robust approach as the main analysis for determining bootstraps
+# Determine unique targets to calculate targets per bootstrap (WWTP section)
+unique_targets <- unique(gsub("loads_lim_", "", gsub("_rev", "", loads_lim.displays$Target)))
+n_unique_targets <- length(unique_targets)
+
+# Use the actual number of solve results to determine bootstraps with results
+# This is more reliable than trying to parse the bootstrap set
+n_bootstraps_with_results <- length(solve_results)
+
+cat("WWTP Analysis Debug Information:\n")
+cat("  - Total solve_result entries found:", length(solve_results), "\n")
+cat("  - Total cost entries found:", length(cost_results), "\n")
+cat("  - Total loads_lim entries found:", nrow(loads_lim.displays), "\n")
+cat("  - Unique targets found:", n_unique_targets, "\n")
+cat("  - Expected loads_lim entries:", n_bootstraps_with_results * n_unique_targets, "\n")
+cat("  - Using n_bootstraps_with_results:", n_bootstraps_with_results, "\n")
+
+# Validate that we have consistent data
+expected_loads_entries <- n_bootstraps_with_results * n_unique_targets
+if(nrow(loads_lim.displays) != expected_loads_entries) {
+  cat("WARNING: Inconsistent data detected in WWTP analysis.\n")
+  cat("  Expected", expected_loads_entries, "loads_lim entries but found", nrow(loads_lim.displays), "\n")
+  cat("  This may indicate partial results or parsing issues.\n")
+}
+
+# Create batch-aware bootstrap assignment for WWTP loads_lim data
+# Use the same logic as main analysis but adapted for WWTP
+if("batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+  # For batch processing with metadata
+  cat("WWTP Analysis: Using batch-aware bootstrap numbering with metadata.\n")
+  
+  # Create bootstrap assignment based on batch information
+  bootstrap_assignment_wwtp <- c()
+  
+  # Find all rows with loads_lim data
+  loads_lim_rows <- which(sapply(dat$V1, grepl, pattern = "loads_lim_"))
+  
+  for(i in seq_along(loads_lim_rows)) {
+    row_idx <- loads_lim_rows[i]
+    if(row_idx <= nrow(dat) && "batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+      batch_info <- dat[row_idx, ]
+      if(!is.na(batch_info$batch_num) && !is.na(batch_info$bootstrap_offset)) {
+        # Calculate position within the loads_lim entries for this batch
+        batch_loads_rows <- intersect(loads_lim_rows, which(dat$batch_num == batch_info$batch_num))
+        position_in_batch_loads <- which(batch_loads_rows == row_idx)
+        
+        # Calculate which bootstrap this entry belongs to
+        bootstrap_in_batch <- ceiling(position_in_batch_loads / n_unique_targets)
+        global_bootstrap <- batch_info$bootstrap_offset + bootstrap_in_batch
+        
+        bootstrap_assignment_wwtp <- c(bootstrap_assignment_wwtp, global_bootstrap)
+      } else {
+        # Fallback for missing metadata
+        bootstrap_assignment_wwtp <- c(bootstrap_assignment_wwtp, ceiling(i / n_unique_targets))
+      }
+    } else {
+      # Fallback for out of bounds
+      bootstrap_assignment_wwtp <- c(bootstrap_assignment_wwtp, ceiling(i / n_unique_targets))
+    }
+  }
+  
+} else {
+  # For single file or simple sequential processing
+  cat("WWTP Analysis: Using sequential bootstrap numbering.\n")
+  bootstrap_assignment_wwtp <- rep(1:n_bootstraps_with_results, each = n_unique_targets)
+}
+
+# Ensure we have the right number of assignments
+if(length(bootstrap_assignment_wwtp) != nrow(loads_lim.displays)) {
+  cat("WARNING: Bootstrap assignment length mismatch. Adjusting...\n")
+  cat("  Assignment length:", length(bootstrap_assignment_wwtp), "\n")
+  cat("  Loads data length:", nrow(loads_lim.displays), "\n")
+  
+  # Truncate or extend as needed
+  if(length(bootstrap_assignment_wwtp) > nrow(loads_lim.displays)) {
+    bootstrap_assignment_wwtp <- bootstrap_assignment_wwtp[1:nrow(loads_lim.displays)]
+  } else {
+    # Extend with simple sequential numbering
+    remaining_needed <- nrow(loads_lim.displays) - length(bootstrap_assignment_wwtp)
+    last_bootstrap <- max(bootstrap_assignment_wwtp, na.rm = TRUE)
+    additional_assignments <- rep((last_bootstrap + 1):(last_bootstrap + ceiling(remaining_needed / n_unique_targets)), each = n_unique_targets)[1:remaining_needed]
+    bootstrap_assignment_wwtp <- c(bootstrap_assignment_wwtp, additional_assignments)
+  }
+}
+
+cat("WWTP Analysis: Final bootstrap assignment summary:\n")
+cat("  - Bootstrap range:", min(bootstrap_assignment_wwtp, na.rm = TRUE), "to", max(bootstrap_assignment_wwtp, na.rm = TRUE), "\n")
+cat("  - Assignment length:", length(bootstrap_assignment_wwtp), "\n")
+cat("  - Unique bootstraps assigned:", length(unique(bootstrap_assignment_wwtp)), "\n")
+
+loads_lim.summary <- loads_lim.displays %>%
+  mutate(
+    Target = gsub("loads_lim_", "", gsub("_rev", "", Target)),
+    Limit = as.numeric(Limit),
+    bootstrap = bootstrap_assignment_wwtp
+  ) %>%
+  pivot_wider(id_cols = bootstrap, names_from = Target, values_from = Limit)
+
+bootstrap.summary <- data.frame(
+  loads_lim.summary,
+  solve_result = solve_results[1:nrow(loads_lim.summary)],
+  cost = cost_results[1:nrow(loads_lim.summary)]
+) %>%
+  mutate(
+    cost = case_when(solve_result == 0 ~ NA_real_, solve_result == 1 ~ cost)
+  )
+
+cat("WWTP Analysis: Final summary statistics:\n")
+cat("  - Bootstrap summary rows:", nrow(bootstrap.summary), "\n")
+cat("  - Successful solves:", sum(bootstrap.summary$solve_result, na.rm = TRUE), "\n")
+cat("  - Failed solves:", sum(bootstrap.summary$solve_result == 0, na.rm = TRUE), "\n")
+
+# Determine primary target for WWTP analysis plots
+available_targets_wwtp <- names(loads_lim.summary)[names(loads_lim.summary) != "bootstrap"]
+primary_target_wwtp <- available_targets_wwtp[1]
+
+ggplot(
+  bootstrap.summary, aes_string(x = primary_target_wwtp, y = "solve_result")
+) + 
+  geom_point(size = 3, alpha = 0.1) +
+  labs(x = paste0("Target Loading (", primary_target_wwtp, ")"), y = "Model Success")
+
+BMPdescriptions_begin <- which(sapply(dat$V1, grepl, pattern = "sum[{]c in comid_all[}]"))
+which_point <- grep("point", dat[BMPdescriptions_begin,]$V1)
+which_ag <- grep("ag", dat[BMPdescriptions_begin,]$V1)
+which_urban <- grep("urban", dat[BMPdescriptions_begin,]$V1)
+which_ripbuf <- grep("ripbuf", dat[BMPdescriptions_begin,]$V1)
+BMP <- c()
+BMP[which_point] <- "point"
+BMP[which_ag] <- "ag"
+BMP[which_urban] <- "urban"
+BMP[which_ripbuf] <- "ripbuf"
+
+BMP.end.rows <- which(sapply(dat$V1, grepl, pattern = ";"))
+
+BMPdescriptions_end <- foreach(
+  i = 1:length(BMPdescriptions_begin), .combine = "c"
+) %do% {
+  if(i %in% which_point) {tmp <- BMPdescriptions_begin[i]} else {
+    tmp <- BMP.end.rows[min(which(BMP.end.rows > BMPdescriptions_begin[i]))]
+  }
+  tmp
+}
+
+# Look for point_dec arrays with actual WWTP selections
+# Pattern matches "point_dec [" which appears when WWTPs are actually selected
+point.dec.begin <- which(sapply(dat$V1, grepl, pattern = "point_dec \\["))
+point_descriptions_end <- foreach(
+  i = 1:length(point.dec.begin), .combine = "c"
+) %do% {
+  tmp <- BMP.end.rows[min(which(BMP.end.rows > point.dec.begin[i]))]
+  tmp
+}
+
+BMPspending_summary <- foreach(i = 1:length(BMPdescriptions_begin), .combine = "rbind") %do% {
+  tmp <- dat[BMPdescriptions_begin[i]:BMPdescriptions_end[i],1]$V1
+  
+  # Use consistent bootstrap numbering method for all BMP analyses
+  # This should match the method used for loads_lim bootstrap assignment
+  if("batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+    # Find the batch information for this BMP description entry
+    if(BMPdescriptions_begin[i] <= nrow(dat)) {
+      batch_info <- dat[BMPdescriptions_begin[i], ]
+      
+      if(!is.na(batch_info$batch_num) && !is.na(batch_info$bootstrap_offset)) {
+        # Find position within batch for BMP descriptions
+        batch_rows <- which(dat$batch_num == batch_info$batch_num)
+        batch_bmp_rows <- intersect(BMPdescriptions_begin, batch_rows)
+        position_in_batch <- which(batch_bmp_rows == BMPdescriptions_begin[i])
+        
+        # Calculate which bootstrap this BMP description belongs to
+        # Assuming 4 BMP categories per bootstrap (point, ag, urban, ripbuf)
+        bootstrap_in_batch <- ceiling(position_in_batch / 4)
+        bootstrap_num <- batch_info$bootstrap_offset + bootstrap_in_batch
+      } else {
+        # Fallback calculation
+        bootstrap_num <- ceiling(i / 4)
+      }
+    } else {
+      bootstrap_num <- ceiling(i / 4)  # Fallback
+    }
+  } else {
+    # Simple sequential assignment for single file
+    bootstrap_num <- ceiling(i / 4)
+  }
+  
+  if(i %in% which_point) {
+    bee <- as.numeric(str_split_fixed(tmp, " = ", n = 2)[2])
+    tmp.dat <- data_frame(bootstrap = bootstrap_num, BMP = "WWTP_upgrades", Total_Spent = bee)
+  } else if(length(tmp) > 2) {
+    tmp.clean <- str_split_fixed(parse_character(tmp[2:(length(tmp)-1)]), " ", n = 2)
+    BMP <- parse_character(tmp.clean[,1])
+    costs <- parse_number(tmp.clean[,2])
+    
+    tmp.dat <- data_frame(bootstrap = bootstrap_num, BMP = BMP, Total_Spent = costs)
+  } else {tmp.dat <- NULL}
+  tmp.dat
+}
+
+# Debug: Check BMP spending bootstrap assignments
+cat("BMP Spending Bootstrap Assignment Debug:\n")
+cat("  - Bootstrap range for BMP spending:", min(BMPspending_summary$bootstrap, na.rm = TRUE), "to", max(BMPspending_summary$bootstrap, na.rm = TRUE), "\n")
+cat("  - Unique bootstraps in BMP spending:", length(unique(BMPspending_summary$bootstrap)), "\n")
+cat("  - Point source (WWTP) entries:", sum(BMPspending_summary$BMP == "WWTP_upgrades", na.rm = TRUE), "\n")
+
+# Load WWTP COMIDs from input file if it exists
+wwtp_file <- paste0(working_dir, "Preprocessing/Inputs/WWTP_COMIDs.csv")
+if(file.exists(wwtp_file)) {
+  cat("Loading WWTP facility data from:", wwtp_file, "\n")
+  wwtp_data <- read.csv(
+    wwtp_file,
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(COMID = as.character(COMID))
+  
+  cat("  - Loaded", nrow(wwtp_data), "WWTP facilities\n")
+  
+  # Create function to generate WWTP list from checklist
+  makeWWTPlist <- function(checklist) {
+    # Find which WWTPs are in the checklist
+    matching_wwtps <- wwtp_data %>%
+      filter(COMID %in% checklist) %>%
+      mutate(display_name = paste0(Plant_Name, " (", State, ")"))
+    
+    if(nrow(matching_wwtps) > 0) {
+      # Create comma-separated list
+      wwtp_list <- paste(matching_wwtps$display_name, collapse = ", ")
+      cat("  - Found", nrow(matching_wwtps), "matching WWTP facilities for COMIDs:", paste(checklist, collapse = ", "), "\n")
+    } else {
+      wwtp_list <- "None"
+      cat("  - No matching WWTP facilities found for COMIDs:", paste(checklist, collapse = ", "), "\n")
+    }
+    
+    return(wwtp_list)
+  }
+} else {
+  cat("WARNING: WWTP_COMIDs.csv file not found at:", wwtp_file, "\n")
+  # If WWTP file doesn't exist, create a simple function
+  makeWWTPlist <- function(checklist) {
+    if(length(checklist) > 0) {
+      return(paste(checklist, collapse = ", "))
+    } else {
+      return("None")
+    }
+  }
+}
+
+# Only process WWTP improvements if point.dec.begin has data
+# (i.e., if any bootstraps actually selected WWTPs for implementation)
+if(length(point.dec.begin) > 0 && length(point_descriptions_end) > 0) {
+  cat("Processing", length(point.dec.begin), "WWTP improvement entries...\n")
+  
+  WWTPimp_summary <- as.data.frame(foreach(
+    i = 1:length(point.dec.begin), .combine = "rbind"
+  ) %do% {
+    tmp <- dat[point.dec.begin[i]:point_descriptions_end[i],1]$V1
+    
+    # Use the SAME bootstrap assignment method as BMP spending
+    # Find which BMP description this point_dec corresponds to
+    # Since point_dec entries should correspond to point source BMP descriptions
+    matching_bmp_idx <- NA
+    
+    # Find the closest BMPdescriptions_begin index that corresponds to point source
+    point_bmp_indices <- BMPdescriptions_begin[which_point]
+    if(length(point_bmp_indices) > 0 && i <= length(point_bmp_indices)) {
+      # Use the same bootstrap assignment as the corresponding BMP description
+      bmp_idx <- which(BMPdescriptions_begin == point_bmp_indices[i])
+      if(length(bmp_idx) > 0) {
+        matching_bmp_idx <- bmp_idx[1]
+      }
+    }
+    
+    # Calculate bootstrap number using same method as BMP spending
+    if(!is.na(matching_bmp_idx)) {
+      # Use same calculation as BMP spending
+      if("batch_num" %in% names(dat) && "bootstrap_offset" %in% names(dat)) {
+        if(BMPdescriptions_begin[matching_bmp_idx] <= nrow(dat)) {
+          batch_info <- dat[BMPdescriptions_begin[matching_bmp_idx], ]
+          
+          if(!is.na(batch_info$batch_num) && !is.na(batch_info$bootstrap_offset)) {
+            batch_rows <- which(dat$batch_num == batch_info$batch_num)
+            batch_bmp_rows <- intersect(BMPdescriptions_begin, batch_rows)
+            position_in_batch <- which(batch_bmp_rows == BMPdescriptions_begin[matching_bmp_idx])
+            bootstrap_in_batch <- ceiling(position_in_batch / 4)
+            global_bootstrap <- batch_info$bootstrap_offset + bootstrap_in_batch
+          } else {
+            global_bootstrap <- ceiling(matching_bmp_idx / 4)
+          }
+        } else {
+          global_bootstrap <- ceiling(matching_bmp_idx / 4)
+        }
+      } else {
+        global_bootstrap <- ceiling(matching_bmp_idx / 4)
+      }
+    } else {
+      # Fallback: use simple sequential assignment
+      global_bootstrap <- i
+    }
+    
+    if(length(tmp) > 2) {
+      pulledlist <- gsub("'", "", str_split_fixed(
+        parse_character(tmp[2:(length(tmp)-1)]), " ", n = 2
+      )[,1]
+      )
+      cat("  - Bootstrap", global_bootstrap, "selected COMIDs:", paste(pulledlist, collapse = ", "), "\n")
+      WWTPlist <- makeWWTPlist(pulledlist)
+      
+    } else {
+      cat("  - Bootstrap", global_bootstrap, "has no WWTP selections (tmp length <=2)\n")
+      WWTPlist <- "None"
+    }
+    data.frame(bootstrap = global_bootstrap, WWTPimps = WWTPlist)
+  }
+  )
+  
+  # Debug: Check WWTP improvements bootstrap assignments
+  cat("WWTP Improvements Bootstrap Assignment Debug:\n")
+  cat("  - Bootstrap range for WWTP improvements:", min(WWTPimp_summary$bootstrap, na.rm = TRUE), "to", max(WWTPimp_summary$bootstrap, na.rm = TRUE), "\n")
+  cat("  - Unique bootstraps in WWTP improvements:", length(unique(WWTPimp_summary$bootstrap)), "\n")
+  cat("  - Non-'None' WWTP entries:", sum(WWTPimp_summary$WWTPimps != "None", na.rm = TRUE), "\n")
+  
+} else {
+  # Create data frame with "None" for all bootstraps if no WWTPs were selected
+  # Use the actual bootstrap numbers from the bootstrap.summary created above
+  WWTPimp_summary <- data.frame(
+    bootstrap = bootstrap.summary$bootstrap, 
+    WWTPimps = "None"
+  )
+  cat("No point_dec entries found. Created default WWTP summary with 'None' for", nrow(WWTPimp_summary), "bootstraps.\n")
+} 
+
+
+BMPspending_summary_full <- BMPspending_summary %>%
+  full_join(., BMPspending_summary %>% expand(bootstrap, BMP)) %>%
+  mutate(
+    Total_Spent = case_when(
+      is.na(Total_Spent) ~ 0, !is.na(Total_Spent) ~ Total_Spent
+    ),
+    BMP_Category = case_when(
+      BMP %in% c("WWTP_upgrades") ~ "Point Source BMPs",
+      BMP %in% c("Grassed_Buffer", "Forested_Buffer") ~ "Riparian Buffer BMPs",
+      BMP %in% c("Biofiltration_w_Underdrain", "Bioretention_Basin", "Enhanced_Biofiltration_w_ISR", "Extended_Dry_Detention_Basin", "Grass_Swale_w_detention", "Gravel_Wetland", "Infiltration_Basin", "Infiltration_Chamber", "Infiltration_Trench", "Porous_Pavement_w_subsurface_infiltration", "Porous_Pavement_w_underdrain", "Sand_Filter_w_underdrain", "Wet_Pond") ~ "Urban BMPs",
+      BMP %in% c("Conservation", "Contour_Farming", "Fert_20", "Filterstrip", "Manure_Injection", "MIN_TILL", "Ponds", "Terrace_Only", "Terrace_Waterway", "Waterway_Only") ~ "Agricultural BMPs"
+    )
+  )%>%
+  left_join(., bootstrap.summary, by = "bootstrap") %>%
+  filter(solve_result == 1) %>%
+  left_join(., WWTPimp_summary, by = "bootstrap")
+
+# Debug: Check final joined dataset
+cat("Final Dataset Debug Information:\n")
+cat("  - Total rows in BMPspending_summary_full:", nrow(BMPspending_summary_full), "\n")
+cat("  - Point Source BMP rows:", sum(BMPspending_summary_full$BMP_Category == "Point Source BMPs", na.rm = TRUE), "\n")
+cat("  - Rows with WWTPimps data:", sum(!is.na(BMPspending_summary_full$WWTPimps)), "\n")
+cat("  - Rows with non-'None' WWTPimps:", sum(BMPspending_summary_full$WWTPimps != "None", na.rm = TRUE), "\n")
+cat("  - Unique WWTP facilities found:", length(unique(BMPspending_summary_full$WWTPimps[BMPspending_summary_full$WWTPimps != "None"])), "\n")
+
+# Sample of WWTP data for Point Source BMPs
+point_source_data <- BMPspending_summary_full %>% filter(BMP_Category == "Point Source BMPs")
+if(nrow(point_source_data) > 0) {
+  cat("  - Sample of WWTPimps values for Point Source BMPs:\n")
+  cat("    ", head(unique(point_source_data$WWTPimps), 5), "\n")
+  
+  # Check for mismatched bootstrap numbers
+  missing_wwtp <- point_source_data %>% filter(is.na(WWTPimps) | WWTPimps == "")
+  if(nrow(missing_wwtp) > 0) {
+    cat("  - Point Source BMPs missing WWTP info:", nrow(missing_wwtp), "rows\n")
+    cat("    Bootstrap numbers with missing WWTP info:", head(missing_wwtp$bootstrap, 10), "\n")
+  }
+}
+
+# Compare bootstrap ranges
+cat("Bootstrap Range Comparison:\n")
+cat("  - bootstrap.summary range:", min(bootstrap.summary$bootstrap), "to", max(bootstrap.summary$bootstrap), "\n")
+cat("  - BMPspending_summary range:", min(BMPspending_summary$bootstrap, na.rm = TRUE), "to", max(BMPspending_summary$bootstrap, na.rm = TRUE), "\n")
+cat("  - WWTPimp_summary range:", min(WWTPimp_summary$bootstrap, na.rm = TRUE), "to", max(WWTPimp_summary$bootstrap, na.rm = TRUE), "\n")
+
+# First plot - BMP spending by category
+BMPspendingplot <- ggplot(
+  BMPspending_summary_full %>%
+    group_by(BMP) %>%
+    mutate(
+      mean_spent = mean(Total_Spent),
+    )
+  , 
+  aes_string(
+    y = "Total_Spent / 1000000", 
+    x = paste0(primary_target_wwtp, " / 1000000"), 
+    group = "BMP", 
+    color = "BMP"
+  )
+) + 
+  geom_point(size = 2, alpha = 0.3) +
+  geom_smooth(lwd = 2, se = FALSE) +
+  scale_x_continuous(name = paste0("Target Loading (x 1,000,000, ", primary_target_wwtp, ")")) +
+  scale_y_continuous(
+    trans = "identity",
+    name = "Annualized Spending (x $1,000,000)"
+  ) +
+  facet_wrap(facets = "BMP_Category", scales = "free") +
+  theme(legend.position = "bottom") 
+
+print(BMPspendingplot)
+
+ggsave(
+  filename = paste0(figureoutputs, "WWTP_BMP_Spending_vs_Target_Loading.png"),
+  plot = BMPspendingplot,
+  width = 12, height = 8, dpi = 300
+)
+
+# Second plot - WWTP spending with facility names
+WWTPspendingplot <- ggplot(
+  BMPspending_summary_full %>%
+    filter(BMP_Category == "Point Source BMPs") %>%
+    mutate(WWTPimps_wrapped = str_wrap(WWTPimps, width = 30)),  # Wrap text to 30 characters
+  aes_string(
+    y = "Total_Spent / 1000000", 
+    x = paste0(primary_target_wwtp, " / 1000000"), 
+    color = "WWTPimps_wrapped"
+  )
+) + 
+  geom_point(size = 4, alpha = 0.7) +
+  scale_x_continuous(name = paste0("Target Loading (x 1,000,000, ", primary_target_wwtp, ")")) +
+  scale_y_continuous(
+    trans = "identity",
+    name = "Annualized Spending (x $1,000,000)"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 10)
+  ) +
+  guides(color = guide_legend(
+    override.aes = list(size = 6),
+    ncol = 2,
+    title = "WWTP Facilities"
+  ))
+
+print(WWTPspendingplot)
+
+ggsave(
+  filename = paste0(figureoutputs, "WWTP_BMP_Spending_vs_Target_Loading_with_Facilities.png"),
+  plot = WWTPspendingplot,
+  width = 12, height = 8, dpi = 300
+)
+```
+
+

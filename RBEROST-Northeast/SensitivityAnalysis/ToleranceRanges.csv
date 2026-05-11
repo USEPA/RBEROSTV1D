@@ -1,0 +1,153 @@
+param,setmember,tolerance_low.cost,tolerance_high.cost,tolerance_low.spatial,tolerance_high.spatial,tolerance_low,tolerance_high,param_source,lowendtolerance,highendtolerance
+ag_costs_capital,Conservation,0.01,100,0.7,1.1,0.7,1.1,Provided Data,not sensitive,sensitive
+ag_costs_capital,Contour_Farming,0.01,100,0.06,1.05,0.06,1.05,Provided Data,not sensitive,sensitive
+ag_costs_capital,Fert_20,0.01,100,0.9,1.005,0.9,1.005,Provided Data,sensitive,highly sensitive
+ag_costs_capital,Filterstrip,0.6,2,0.98,1.1,0.98,1.1,Provided Data,sensitive,sensitive
+ag_costs_capital,MIN_TILL,0.01,100,0.7,1.1,0.7,1.1,Provided Data,not sensitive,sensitive
+ag_costs_capital,Manure_Injection,0.01,100,0.6,100,0.6,100,Provided Data,not sensitive,not sensitive
+ag_costs_capital,Ponds,0.01,100,0.9,1.1,0.9,1.1,Provided Data,sensitive,sensitive
+ag_costs_capital,Terrace_Only,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_capital,Terrace_Waterway,0.01,100,0.05,100,0.05,100,Provided Data,not sensitive,not sensitive
+ag_costs_capital,Waterway_Only,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Conservation,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Contour_Farming,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Fert_20,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Filterstrip,0.01,5,0.9,1.5,0.9,1.5,Provided Data,sensitive,not sensitive
+ag_costs_operations,MIN_TILL,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Manure_Injection,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Ponds,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Terrace_Only,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Terrace_Waterway,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_costs_operations,Waterway_Only,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ag_effic_N,Conservation,0.01,1.5,0.95,1.05,0.95,1.05,Provided Data,sensitive,sensitive
+ag_effic_N,Contour_Farming,0.01,5,0.95,1.05,0.95,1.05,Provided Data,sensitive,sensitive
+ag_effic_N,Fert_20,0.01,1.5,0.997,1.03,0.997,1.03,Provided Data,highly sensitive,sensitive
+ag_effic_N,Filterstrip,0.95,1.05,0.995,1.05,0.995,1.05,Provided Data,highly sensitive,sensitive
+ag_effic_N,MIN_TILL,0.01,1.5,0.95,1.005,0.95,1.005,Provided Data,sensitive,highly sensitive
+ag_effic_N,Manure_Injection,0.01,2,0.01,1.5,0.01,1.5,Provided Data,not sensitive,not sensitive
+ag_effic_N,Ponds,0.01,3,0.9,1.2,0.9,1.2,Provided Data,sensitive,not sensitive
+ag_effic_N,Terrace_Only,0.01,3,0.01,1.5,0.01,1.5,Provided Data,not sensitive,not sensitive
+ag_effic_N,Terrace_Waterway,0.01,1.4,0.96,1.1,0.96,1.1,Provided Data,sensitive,sensitive
+ag_effic_N,Waterway_Only,0.01,1.5,0.01,1.3,0.01,1.3,Provided Data,not sensitive,not sensitive
+ag_frac_max,Conservation,0.01,1,0.95,1,0.95,1,User Supplied,sensitive,not applicable
+ag_frac_max,Contour_Farming,0.01,1,0.9,1,0.9,1,User Supplied,sensitive,not applicable
+ag_frac_max,Fert_20,0.01,1,0.9,1,0.9,1,User Supplied,sensitive,not applicable
+ag_frac_max,Filterstrip,0.9,1,1,1,1,1,User Supplied,highly sensitive,not applicable
+ag_frac_max,MIN_TILL,0.01,1,0.9,1,0.9,1,User Supplied,sensitive,not applicable
+ag_frac_max,Manure_Injection,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+ag_frac_max,Ponds,0.01,10,0.9,1.05,0.9,1.05,User Supplied,sensitive,not applicable
+ag_frac_max,Terrace_Only,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+ag_frac_max,Terrace_Waterway,0.01,1,0.5,1,0.5,1,User Supplied,not sensitive,not applicable
+ag_frac_max,Waterway_Only,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+ag_frac_min,Conservation,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Contour_Farming,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Fert_20,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Filterstrip,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,MIN_TILL,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Manure_Injection,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Ponds,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Terrace_Only,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Terrace_Waterway,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ag_frac_min,Waterway_Only,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+agcost_frac,NA,0.7,1.4,0.95,1.05,0.95,1.05,Provided Data,sensitive,sensitive
+area,ag,0.7,1.4,0.95,1.05,0.95,1.05,Provided Data,sensitive,sensitive
+area,urban,0.01,100,0.8,100,0.8,100,Provided Data,not sensitive,not sensitive
+point_costs,capital,0.9,1.1,0.9,1.1,0.9,1.1,Provided Data,sensitive,sensitive
+point_costs,operations,0.6,1.4,0.7,1.3,0.7,1.3,Provided Data,not sensitive,not sensitive
+ripbuf_costs_capital,Forested_Buffer,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ripbuf_costs_capital,Grassed_Buffer,0.01,100,0.05,100,0.05,100,Provided Data,not sensitive,not sensitive
+ripbuf_costs_operations,Forested_Buffer,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ripbuf_costs_operations,Grassed_Buffer,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+ripbuf_frac_max,Forested_Buffer,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+ripbuf_frac_max,Grassed_Buffer,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+ripbuf_frac_min,Forested_Buffer,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+ripbuf_frac_min,Grassed_Buffer,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+runoff_coeff_urban,urban,0.01,100,0.8,100,0.8,100,Provided Data,not sensitive,not sensitive
+septic_bmp_implement,none,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+septic_costs_capital,none,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+septic_costs_operati,none,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+septic_effic_N,none,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+total_banklength,NA,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+unbuffered_banklength,Forested_Buffer,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+unbuffered_banklength,Grassed_Buffer,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Biofiltration_w_Underdrain,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Bioretention_Basin,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Enhanced_Biofiltration_w_ISR,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Extended_Dry_Detention_Basin,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Grass_Swale_w_detention,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Gravel_Wetland,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Basin,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Chamber,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Trench,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Porous_Pavement_w_subsurface_infiltration,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Porous_Pavement_w_underdrain,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Sand_Filter_w_underdrain,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_bmp_implementationpotential,Wet_Pond,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_cost_adjustment_coef,NA,0.01,100,0.8,100,0.8,100,Provided Data,not sensitive,not sensitive
+urban_costs,Biofiltration_w_Underdrain,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Bioretention_Basin,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Enhanced_Biofiltration_w_ISR,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Extended_Dry_Detention_Basin,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Grass_Swale_w_detention,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Gravel_Wetland,0.01,100,0.8,100,0.8,100,Provided Data,not sensitive,not sensitive
+urban_costs,Infiltration_Basin,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_costs,Infiltration_Chamber,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_costs,Infiltration_Trench,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_costs,Porous_Pavement_w_subsurface_infiltration,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_costs,Porous_Pavement_w_underdrain,0.01,100,0.05,100,0.05,100,Provided Data,not sensitive,not sensitive
+urban_costs,Sand_Filter_w_underdrain,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,Wet_Pond,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_costs,capital,0.01,100,0.6,100,0.6,100,Provided Data,not sensitive,not sensitive
+urban_costs,operations,0.01,100,0.5,100,0.5,100,Provided Data,not sensitive,not sensitive
+urban_design_depth,Biofiltration_w_Underdrain,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Bioretention_Basin,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Enhanced_Biofiltration_w_ISR,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Extended_Dry_Detention_Basin,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Grass_Swale_w_detention,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Gravel_Wetland,0.01,100,0.8,100,0.8,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Infiltration_Basin,0.01,100,0.01,100,0.01,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Infiltration_Chamber,0.01,100,0.01,100,0.01,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Infiltration_Trench,0.01,100,0.01,100,0.01,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Porous_Pavement_w_subsurface_infiltration,0.01,100,0.01,100,0.01,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Porous_Pavement_w_underdrain,0.01,100,0.05,100,0.05,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Sand_Filter_w_underdrain,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_design_depth,Wet_Pond,0.01,100,0.5,100,0.5,100,User Supplied,not sensitive,not sensitive
+urban_effic_N,Biofiltration_w_Underdrain,0.01,100,0.01,4,0.01,4,Provided Data,not sensitive,not sensitive
+urban_effic_N,Bioretention_Basin,0.01,100,0.01,4,0.01,4,Provided Data,not sensitive,not sensitive
+urban_effic_N,Enhanced_Biofiltration_w_ISR,0.01,100,0.01,2,0.01,2,Provided Data,not sensitive,not sensitive
+urban_effic_N,Extended_Dry_Detention_Basin,0.01,100,0.01,5,0.01,5,Provided Data,not sensitive,not sensitive
+urban_effic_N,Grass_Swale_w_detention,0.01,100,0.01,5,0.01,5,Provided Data,not sensitive,not sensitive
+urban_effic_N,Gravel_Wetland,0.01,100,0.01,1.3,0.01,1.3,Provided Data,not sensitive,not sensitive
+urban_effic_N,Infiltration_Basin,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_effic_N,Infiltration_Chamber,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_effic_N,Infiltration_Trench,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_effic_N,Porous_Pavement_w_subsurface_infiltration,0.01,100,0.01,100,0.01,100,Provided Data,not sensitive,not sensitive
+urban_effic_N,Porous_Pavement_w_underdrain,0.01,100,0.01,20,0.01,20,Provided Data,not sensitive,not sensitive
+urban_effic_N,Sand_Filter_w_underdrain,0.01,100,0.01,5,0.01,5,Provided Data,not sensitive,not sensitive
+urban_effic_N,Wet_Pond,0.01,100,0.01,2,0.01,2,Provided Data,not sensitive,not sensitive
+urban_frac_max,Biofiltration_w_Underdrain,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Bioretention_Basin,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Enhanced_Biofiltration_w_ISR,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Extended_Dry_Detention_Basin,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Grass_Swale_w_detention,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Gravel_Wetland,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Infiltration_Basin,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Infiltration_Chamber,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Infiltration_Trench,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Porous_Pavement_w_subsurface_infiltration,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Porous_Pavement_w_underdrain,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Sand_Filter_w_underdrain,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_max,Wet_Pond,0.01,1,0.01,1,0.01,1,User Supplied,not sensitive,not applicable
+urban_frac_min,Biofiltration_w_Underdrain,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Bioretention_Basin,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Enhanced_Biofiltration_w_ISR,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Extended_Dry_Detention_Basin,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Grass_Swale_w_detention,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Gravel_Wetland,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Infiltration_Basin,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Infiltration_Chamber,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Infiltration_Trench,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Porous_Pavement_w_subsurface_infiltration,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Porous_Pavement_w_underdrain,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Sand_Filter_w_underdrain,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable
+urban_frac_min,Wet_Pond,0.01,100,0.01,100,0.01,100,User Supplied,not applicable,not applicable

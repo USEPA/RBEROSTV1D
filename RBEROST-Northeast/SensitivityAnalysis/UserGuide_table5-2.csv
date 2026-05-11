@@ -1,0 +1,90 @@
+Parameter,Set member (BMP or other),Tolerance to decreased values,Tolerance to increased values
+ag_costs_capital,Conservation,not sensitive,sensitive
+ag_costs_capital,Contour_Farming,not sensitive,sensitive
+ag_costs_capital,Fert_20,sensitive,highly sensitive
+ag_costs_capital,Filterstrip,sensitive,sensitive
+ag_costs_capital,MIN_TILL,not sensitive,sensitive
+ag_costs_capital,Manure_Injection,not sensitive,not sensitive
+ag_costs_capital,Ponds,sensitive,sensitive
+ag_costs_capital,Terrace_Only,not sensitive,not sensitive
+ag_costs_capital,Terrace_Waterway,not sensitive,not sensitive
+ag_costs_capital,Waterway_Only,not sensitive,not sensitive
+ag_costs_operations,Conservation,not sensitive,not sensitive
+ag_costs_operations,Contour_Farming,not sensitive,not sensitive
+ag_costs_operations,Fert_20,not sensitive,not sensitive
+ag_costs_operations,Filterstrip,sensitive,not sensitive
+ag_costs_operations,MIN_TILL,not sensitive,not sensitive
+ag_costs_operations,Manure_Injection,not sensitive,not sensitive
+ag_costs_operations,Ponds,not sensitive,not sensitive
+ag_costs_operations,Terrace_Only,not sensitive,not sensitive
+ag_costs_operations,Terrace_Waterway,not sensitive,not sensitive
+ag_costs_operations,Waterway_Only,not sensitive,not sensitive
+ag_effic_N,Conservation,sensitive,sensitive
+ag_effic_N,Contour_Farming,sensitive,sensitive
+ag_effic_N,Fert_20,highly sensitive,sensitive
+ag_effic_N,Filterstrip,highly sensitive,sensitive
+ag_effic_N,MIN_TILL,sensitive,highly sensitive
+ag_effic_N,Manure_Injection,not sensitive,not sensitive
+ag_effic_N,Ponds,sensitive,not sensitive
+ag_effic_N,Terrace_Only,not sensitive,not sensitive
+ag_effic_N,Terrace_Waterway,sensitive,sensitive
+ag_effic_N,Waterway_Only,not sensitive,not sensitive
+agcost_frac,NA,sensitive,sensitive
+area,ag,sensitive,sensitive
+area,urban,not sensitive,not sensitive
+point_costs,capital,sensitive,sensitive
+point_costs,operations,not sensitive,not sensitive
+ripbuf_costs_capital,Forested_Buffer,not sensitive,not sensitive
+ripbuf_costs_capital,Grassed_Buffer,not sensitive,not sensitive
+ripbuf_costs_operations,Forested_Buffer,not sensitive,not sensitive
+ripbuf_costs_operations,Grassed_Buffer,not sensitive,not sensitive
+runoff_coeff_urban,urban,not sensitive,not sensitive
+septic_bmp_implement,none,not sensitive,not sensitive
+septic_costs_capital,none,not sensitive,not sensitive
+septic_costs_operati,none,not sensitive,not sensitive
+septic_effic_N,none,not sensitive,not sensitive
+total_banklength,NA,not sensitive,not sensitive
+unbuffered_banklength,Forested_Buffer,not sensitive,not sensitive
+unbuffered_banklength,Grassed_Buffer,not sensitive,not sensitive
+urban_bmp_implementationpotential,Biofiltration_w_Underdrain,not sensitive,not sensitive
+urban_bmp_implementationpotential,Bioretention_Basin,not sensitive,not sensitive
+urban_bmp_implementationpotential,Enhanced_Biofiltration_w_ISR,not sensitive,not sensitive
+urban_bmp_implementationpotential,Extended_Dry_Detention_Basin,not sensitive,not sensitive
+urban_bmp_implementationpotential,Grass_Swale_w_detention,not sensitive,not sensitive
+urban_bmp_implementationpotential,Gravel_Wetland,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Basin,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Chamber,not sensitive,not sensitive
+urban_bmp_implementationpotential,Infiltration_Trench,not sensitive,not sensitive
+urban_bmp_implementationpotential,Porous_Pavement_w_subsurface_infiltration,not sensitive,not sensitive
+urban_bmp_implementationpotential,Porous_Pavement_w_underdrain,not sensitive,not sensitive
+urban_bmp_implementationpotential,Sand_Filter_w_underdrain,not sensitive,not sensitive
+urban_bmp_implementationpotential,Wet_Pond,not sensitive,not sensitive
+urban_cost_adjustment_coef,NA,not sensitive,not sensitive
+urban_costs,Biofiltration_w_Underdrain,not sensitive,not sensitive
+urban_costs,Bioretention_Basin,not sensitive,not sensitive
+urban_costs,Enhanced_Biofiltration_w_ISR,not sensitive,not sensitive
+urban_costs,Extended_Dry_Detention_Basin,not sensitive,not sensitive
+urban_costs,Grass_Swale_w_detention,not sensitive,not sensitive
+urban_costs,Gravel_Wetland,not sensitive,not sensitive
+urban_costs,Infiltration_Basin,not sensitive,not sensitive
+urban_costs,Infiltration_Chamber,not sensitive,not sensitive
+urban_costs,Infiltration_Trench,not sensitive,not sensitive
+urban_costs,Porous_Pavement_w_subsurface_infiltration,not sensitive,not sensitive
+urban_costs,Porous_Pavement_w_underdrain,not sensitive,not sensitive
+urban_costs,Sand_Filter_w_underdrain,not sensitive,not sensitive
+urban_costs,Wet_Pond,not sensitive,not sensitive
+urban_costs,capital,not sensitive,not sensitive
+urban_costs,operations,not sensitive,not sensitive
+urban_effic_N,Biofiltration_w_Underdrain,not sensitive,not sensitive
+urban_effic_N,Bioretention_Basin,not sensitive,not sensitive
+urban_effic_N,Enhanced_Biofiltration_w_ISR,not sensitive,not sensitive
+urban_effic_N,Extended_Dry_Detention_Basin,not sensitive,not sensitive
+urban_effic_N,Grass_Swale_w_detention,not sensitive,not sensitive
+urban_effic_N,Gravel_Wetland,not sensitive,not sensitive
+urban_effic_N,Infiltration_Basin,not sensitive,not sensitive
+urban_effic_N,Infiltration_Chamber,not sensitive,not sensitive
+urban_effic_N,Infiltration_Trench,not sensitive,not sensitive
+urban_effic_N,Porous_Pavement_w_subsurface_infiltration,not sensitive,not sensitive
+urban_effic_N,Porous_Pavement_w_underdrain,not sensitive,not sensitive
+urban_effic_N,Sand_Filter_w_underdrain,not sensitive,not sensitive
+urban_effic_N,Wet_Pond,not sensitive,not sensitive
