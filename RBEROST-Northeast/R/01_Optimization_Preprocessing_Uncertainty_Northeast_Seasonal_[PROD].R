@@ -1875,9 +1875,9 @@ if(length(Septic_BMPs) > 0){
 ## ACRES data - choose ####
 
 temp_acre <- if(AgBMPcomparison == "No Practice") {
-  fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25.csv"))
+  fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareNoPractice_ICF25ND.csv"))
 } else if(AgBMPcomparison == "Baseline") {
-  fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25.csv"))
+  fread(paste0(InPath, "ACRE_HUC12_HRU_Summary_compareBaseline_ICF25ND.csv"))
 } else {
   stop(
     'AgBMPcomparison must be set to either "No Practice" or "Baseline", quotation marks included.'
