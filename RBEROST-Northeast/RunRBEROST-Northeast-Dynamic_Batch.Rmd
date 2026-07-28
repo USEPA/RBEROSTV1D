@@ -78,7 +78,7 @@ InPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Inputs/")
 OutPath<-paste0(working_dir,"RBEROST-Northeast/Preprocessing/Outputs/")
 
 # Define the name of the UserSpecs input file. This file contains the user specifications for the optimization, including the BMPs that will be considered in the optimization. If you wish to change which BMPs are considered, you can edit this file.
-user_specs_name <- "file_01_UserSpecs_BMPs_wCS_2025.csv" # 01_UserSpecs_BMPs_wCS_NoSeptic.csv
+user_specs_name <- "01_UserSpecs_BMPs_wCS.csv" # 01_UserSpecs_BMPs_wCS_NoSeptic.csv
 
 ### User Interface ###############################################################################################
 MODE <- "Select"
