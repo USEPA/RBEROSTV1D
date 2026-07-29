@@ -12,7 +12,7 @@ RBEROST-User-Guide*
 Images
 z_drafts/
 **/z_drafts/
-RBEROST-Northeast/Data/WBD_National_GDB.gdb/
+Data/WBD_National_GDB.gdb/
 
 # renv
 renv/library/
