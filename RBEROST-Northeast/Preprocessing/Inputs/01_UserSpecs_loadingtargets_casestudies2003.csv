@@ -1,0 +1,162 @@
+watershed_name,Index,ComID,Watershed_HUC,Percent_Reduction,TN_or_TP,OutofNetworkFlag_X,TermFlag_X,Non-Isolated?,Isolated?
+Niantic Bay,1,6170822,,0,TN,,,,X
+Niantic Bay,1,6170916,,0,TN,,,,X
+Byram River,2,7737521,,0.8,TN,,,X,
+Farm River,3,6178546,,0.55,TN,,,,X
+Farm River,3,6178548,,0.55,TN,,,,X
+Hempstead Harbor,4,9509276,,0.86,TN,,,X,
+Hempstead Harbor,4,9509668,,0.86,TN,,,X,
+Hempstead Harbor,4,9509970,,0.86,TN,,,,X
+Hempstead Harbor,4,9509972,,0.86,TN,,,,X
+Hempstead Harbor,4,9509978,,0.86,TN,,,,X
+Hempstead Harbor,4,9509984,,0.86,TN,,,,X
+Hempstead Harbor,4,9509986,,0.86,TN,,,,X
+Hempstead Harbor,4,9509988,,0.86,TN,,,,X
+Hempstead Harbor,4,9509998,,0.86,TN,,,,X
+Hempstead Harbor,4,9510010,,0.86,TN,,,,X
+Hempstead Harbor,4,9510014,,0.86,TN,,,,X
+Hempstead Harbor,4,9510016,,0.86,TN,,,,X
+Hempstead Harbor,4,9510098,,0.86,TN,,,,X
+Huntington Harbor,6,9509166,,NA,TN,,,,X
+Huntington Harbor,6,9509900,,NA,TN,,,,X
+Huntington Harbor,6,9509902,,NA,TN,,,,X
+Huntington Harbor,6,9509904,,NA,TN,,,,X
+Huntington Harbor,6,9509960,,NA,TN,,,,X
+Little Narragansett Bay,7,6168812,,0.52,TN,,,X,
+Little Narragansett Bay,7,6168828,,0.52,TN,,,X,
+Little Narragansett Bay,7,6168850,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168852,,0.52,TN,,,X,
+Little Narragansett Bay,7,6168854,,0.52,TN,,,X,
+Little Narragansett Bay,7,6168860,,0.52,TN,,,X,
+Little Narragansett Bay,7,6168896,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168966,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168968,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168970,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168972,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168974,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168976,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168982,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168984,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168986,,0.52,TN,,,,X
+Little Narragansett Bay,7,6168990,,0.52,TN,,,,X
+Mt. Sinai Harbor,8,9509834,,0.69,TN,,,,X
+Mt. Sinai Harbor,8,9509836,,0.69,TN,,,,X
+Mt. Sinai Harbor,8,9509838,,0.69,TN,,,,X
+Mystic Harbor,9,6168954,,0.68,TN,,,X,
+Norwalk Harbor,10,7733917,,0.83,TN,,,,X
+Norwalk Harbor,10,7733919,,0.83,TN,,,X,
+Norwalk Harbor,10,7733923,,0.83,TN,,,,X
+Norwalk Harbor,10,7734297,,0.83,TN,,,,X
+Norwalk Harbor,10,7734299,,0.83,TN,,,,X
+Pequonnock River,11,7732095,,0.48,TN,,,X,
+Pequonnock River,11,7734211,,0.48,TN,,,,X
+Port Jefferson Harbor,12,9509832,,0.56,TN,,,,X
+Port Jefferson Harbor,12,9509842,,0.56,TN,,,,X
+Port Jefferson Harbor,12,9509844,,0.56,TN,,,,X
+Port Jefferson Harbor,12,9509848,,0.56,TN,,,,X
+Stonington Harbor,13,6168830,,0.38,TN,,,X,
+Stonington Harbor,13,6168832,,0.38,TN,,,X,
+Stonington Harbor,13,6168978,,0.38,TN,,,,X
+Stonington Harbor,13,6168980,,0.38,TN,,,,X
+Stonington Harbor,13,6169002,,0.38,TN,,,,X
+Stony Brook Harbor,14,9509140,,0.86,TN,,,X,
+Stony Brook Harbor,14,9509646,,0.86,TN,,,X,
+Stony Brook Harbor,14,9509850,,0.86,TN,,,,X
+Stony Brook Harbor,14,9509854,,0.86,TN,,,,X
+Saugatuck Estuary,15,7732745,,0.9,TN,,,,X
+Saugatuck Estuary,15,7733853,,0.9,TN,,,X,
+Saugatuck Estuary,15,7733859,,0.9,TN,,,,X
+Saugatuck Estuary,15,7734285,,0.9,TN,,,,X
+Saugatuck Estuary,15,7734289,,0.9,TN,,,,X
+Saugatuck Estuary,15,25077396,,0.9,TN,,,X,
+Southport Harbor Sasco Brook,16,7733327,,0.83,TN,,,X,
+Southport Harbor Sasco Brook,16,7733789,,0.83,TN,,,X,
+Southport Harbor Sasco Brook,16,7734277,,0.83,TN,,,,X
+Southport Harbor Sasco Brook,16,7734279,,0.83,TN,,,,X
+Southport Harbor Sasco Brook,16,7734347,,0.83,TN,,,,X
+Southport Harbor Sasco Brook,16,7734349,,0.83,TN,,,,X
+Southport Harbor Sasco Brook,16,7734359,,0.83,TN,,,,X
+Northport-Centerport Harbor Complex,17,9509898,,0.86,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509194,,0.98,TN,,,X,
+Oyster Bay Cold Spring Harbor Complex,18,9509896,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509906,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509908,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509910,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509926,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509930,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509932,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509944,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509946,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509950,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509952,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509954,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509956,,0.98,TN,,,,X
+Oyster Bay Cold Spring Harbor Complex,18,9509962,,0.98,TN,,,,X
+Mamaroneck River,19,6241365,,0.99,TN,,,X,
+Mamaroneck River,19,6241837,,0.99,TN,,,,X
+Mamaroneck River,19,6241841,,0.99,TN,,,X,
+Mamaroneck River,19,6242005,,0.99,TN,,,,X
+Mamaroneck River,19,6242011,,0.99,TN,,,,X
+Mamaroneck River,19,6242015,,0.99,TN,,,,X
+Mamaroneck River,19,6242017,,0.99,TN,,,,X
+Manhasset Bay,20,9509248,,0.67,TN,,,X,
+Manhasset Bay,20,9509250,,0.67,TN,,,,X
+Manhasset Bay,20,9509262,,0.67,TN,,,,X
+Manhasset Bay,20,9509292,,0.67,TN,,,X,
+Manhasset Bay,20,9509990,,0.67,TN,,,,X
+Manhasset Bay,20,9509992,,0.67,TN,,,,X
+Manhasset Bay,20,9509996,,0.67,TN,,,,X
+Manhasset Bay,20,9510000,,0.67,TN,,,,X
+Manhasset Bay,20,9510002,,0.67,TN,,,,X
+Manhasset Bay,20,9510006,,0.67,TN,,,,X
+Manhasset Bay,20,9510008,,0.67,TN,,,,X
+Manhasset Bay,20,9510018,,0.67,TN,,,,X
+Manhasset Bay,20,9510028,,0.67,TN,,,,X
+Manhasset Bay,20,9510030,,0.67,TN,,,,X
+Nissequogue River,21,9509774,,0.96,TN,,,X,
+Pawcatuck River,22,6141214,,0.21,TN,,,X,
+Pawcatuck River,22,6141326,,0.21,TN,,,,X
+Connecticut River,23,6178582,,0.33,TN,,,,X
+Connecticut River,23,6178586,,0.33,TN,,,,X
+Connecticut River,23,6781289,,0.33,TN,,,X,
+Connecticut River,23,6782259,,0.33,TN,,,X,
+Connecticut River,23,7700490,,0.33,TN,,,X,
+Connecticut River,23,7703046,,0.33,TN,,,X,
+Housatonic River,24,7709738,,0.22,TN,,,X,
+Housatonic River,24,7718660,,0.22,TN,,,,X
+Thames River,25,6170754,,0.22,TN,,,X,
+Thames River,25,6170810,,0.22,TN,,,,X
+Thames River,25,6170812,,0.22,TN,,,,X
+Thames River,25,6170892,,0.22,TN,,,,X
+Lloyd Harbor,26,9509880,,0.4,TN,,,,X
+Lloyd Harbor,26,9509884,,0.4,TN,,,,X
+Lloyd Harbor,26,9509886,,0.4,TN,,,,X
+Lloyd Harbor,26,9509890,,0.4,TN,,,,X
+Lloyd Harbor,26,9509892,,0.4,TN,,,,X
+New Haven Harbor,27,6177676,,0.09,TN,,,X,
+New Haven Harbor,27,6177962,,0.09,TN,,,X,
+New Haven Harbor,27,6178292,,0.09,TN,,,X,
+New Haven Harbor,27,6178522,,0.09,TN,,,,X
+New Haven Harbor,27,6178550,,0.09,TN,,,,X
+New Haven Harbor,27,6178552,,0.09,TN,,,,X
+New Haven Harbor,27,6178556,,0.09,TN,,,,X
+New Haven Harbor,27,6178558,,0.09,TN,,,,X
+New Haven Harbor,27,6178562,,0.09,TN,,,,X
+New Haven Harbor,27,6178610,,0.09,TN,,,,X
+Bantam Lake,28,7713614,,0.249767701,TP,,,X,
+Bantam Lake,28,7712594,,0.249767701,TP,,,X,
+Bantam Lake,28,7713986,,0.249767701,TP,,,X,
+Bantam Lake,28,7713946,,0.249767701,TP,,,X,
+Bantam Lake,28,7713944,,0.249767701,TP,,,X,
+Batterson Park Pond,29,7700234,,0.447761194,TP,,,X,
+Batterson Park Pond,29,7701404,,0.447761194,TP,,,X,
+Kenosia Lake,30,7717216,,0.51010101,TP,,,X,
+Kenosia Lake,30,7718448,,0.51010101,TP,,,X,
+Kenosia Lake,30,7717284,,0.51010101,TP,,,X,
+Linsley Pond Cedar Pond,31,6177886,,0.430905753,TP,,,X,
+Linsley Pond Cedar Pond,31,6178232,,0.430905753,TP,,,X,
+Linsley Pond Cedar Pond,31,6178424,,0.430905753,TP,,,X,
+Upper Connecticut River,32,9327640,,0.33,TN,,,X,
+Upper Middle Connecticut River,33,9332552,,0.33,TN,,,X,
+Lower Middle Connecticut River,34,7698936,,0.09,TN,,,X,
+Lower Connecticut River,35,7703046,,0.1,TN,,,X,
