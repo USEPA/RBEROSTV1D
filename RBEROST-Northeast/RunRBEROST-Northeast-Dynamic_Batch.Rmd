@@ -53,12 +53,13 @@ in the .gitattributes file will be downloaded.  If you are using git you can ins
 download these in git.  Otherwise, you can download these files directly from a Zenodo archive
 by cutting and pasting each of the following urls into a browser (or pointing to each of the urls below and using (<Ctrl-Click>) and saving each into the .\RBEROSTV1D\RBEROST-Northeast\Preprocessing\Inputs folder then unzipping to that folder.  Don't create additional subdirectories under Inputs when unzipping any .zip files.  If those links time out then navigate to 10.5281/zenodo.19186582 and click on corresponding buttons to download each file.
 
-https://zenodo.org/record/21653638/files/ne_dynamic_sparrow_se_tn_final.zip?download=1
-https://zenodo.org/record/21653638/files/Predict_NoBFlowN_WSeptic_final.zip?download=1
-https://zenodo.org/record/21653638/files/Predict_P_final.zip?download=1
-https://zenodo.org/record/21653638/files/ne_dynamic_sparrow_se_tp_final.zip?download=1
-https://zenodo.org/record/21653638/files/ne_sparrow_model_input.zip?download=1
-https://zenodo.org/record/21653638/files/RiparianEfficiencies_ICF25.zip?download=1
+https://zenodo.org/record/22938412/files/ne_dynamic_sparrow_se_tn_final.zip?download=1
+https://zenodo.org/record/22938412/files/Predict_NoBFlowN_WSeptic_final.zip?download=1
+https://zenodo.org/record/22938412/files/Predict_P_final.zip?download=1
+https://zenodo.org/record/22938412/files/ne_dynamic_sparrow_se_tp_final.zip?download=1
+https://zenodo.org/record/22938412/files/ne_sparrow_model_input.zip?download=1
+https://zenodo.org/record/22938412/files/RiparianEfficiencies_ICF25.zip?download=1
+https://zenodo.org/record/22938412/files/RiparianEfficiencies_ICF24.zip?download=1
 
 .\RBEROSTV1D\RBEROST-Northeast\Data folder
 The following are only needed if updating the ACRES database with agricultural BMP efficiencies:
